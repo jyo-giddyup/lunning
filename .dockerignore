@@ -1,0 +1,25 @@
+# Don't ship git, tests, docs, caches, or local artifacts into the image.
+.git
+.github
+.gitignore
+README.md
+MODEL_CARD.md
+CLAUDE.md
+BUILD_METRICS.json
+tests
+conftest.py
+artifacts
+*.joblib
+*.log
+*.jsonl
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.vscode
+.idea
+__pycache__
+*.pyc
+.DS_Store
+fly.toml
+.dockerignore
+.env*

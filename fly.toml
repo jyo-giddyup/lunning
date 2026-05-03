@@ -1,0 +1,41 @@
+# Fly.io deployment config for nil-predictor.
+# Launch:
+#   flyctl auth login
+#   flyctl launch --image ghcr.io/jyo-giddyup/nil-predictor:latest --copy-config --no-deploy
+#   flyctl deploy
+#
+# Once deployed, the service is at https://nil-predictor.fly.dev
+# Set kolx env: NIL_PREDICTOR_URL=https://nil-predictor.fly.dev
+
+app = "nil-predictor"
+primary_region = "iad"
+
+# Image is published by .github/workflows/publish-image.yml on push to main.
+# Override per-deploy with: flyctl deploy --image ghcr.io/jyo-giddyup/nil-predictor:<sha>
+[build]
+  image = "ghcr.io/jyo-giddyup/nil-predictor:latest"
+
+[env]
+  NIL_ARTIFACTS_DIR = "/app/artifacts"
+  PORT = "8000"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "1gb"
