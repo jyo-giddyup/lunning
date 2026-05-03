@@ -97,3 +97,23 @@ echo '{
 ```bash
 pytest -q
 ```
+
+## Production access
+
+The `nil-predictor` HTTP service is not internet-facing on its own.
+Operator access (admin shell, deploy hooks, model-artifact rotation,
+audit-log inspection) goes through **JYSN** — the identity-locked SSH
+access fabric in
+[`jyo-giddyup/lunning-`](https://github.com/jyo-giddyup/lunning-).
+
+JYSN enforces the same standards baseline declared above:
+
+- ISO/IEC 27001:2022 audit trail (hash-chained, no-PII)
+- ISO/IEC 42001:2023 governance (model card, audit events on eval/predict)
+- Privacy by default (Art. VI of `lunning-/CONSTITUTION.md`)
+
+The same identity is used for both internal (mesh VPN) and external
+(public bastion) paths; the cert TTL applied to a session is the
+strictest of all active industry overlays. To deploy this service in a
+regulated context, compose the relevant overlay (HIPAA, PCI, GDPR,
+etc.) on top of JYSN — no code change to `nil-predictor` is needed.
