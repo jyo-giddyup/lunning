@@ -34,6 +34,17 @@ jobs:
       - name: Fairness gate (ISO/IEC TR 24027)
         run: python -m nil_predictor.fairness_check --artifacts artifacts/
 
+      - name: Audit chain integrity (ISO/IEC 27001 / 42001)
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          from nil_predictor.audit import verify
+          ok = verify(Path("artifacts/audit.log"))
+          print(f"audit.verify -> {ok}")
+          sys.exit(0 if ok else 1)
+          PY
+
   stage_separation:
     name: Stage-separation guard
     runs-on: ubuntu-latest
