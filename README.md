@@ -1,16 +1,42 @@
-# nil-predictor
+# lunning
 
 Multi-target prediction models for college athlete NIL outcomes.
 
+## Standards baseline
+
+Any prediction model added to this repo MUST:
+
+| Concern    | Standard                | Requirement                                              |
+| ---------- | ----------------------- | -------------------------------------------------------- |
+| Fairness   | ISO/IEC TR 24027:2021   | Report demographic-parity + equalized-odds gaps in CI    |
+| Risk       | ISO/IEC 23894:2023      | Maintain a risk register in the model card               |
+| Governance | ISO/IEC 42001:2023      | Ship a model card; emit audit-log events on eval/predict |
+| Trust      | ISO/IEC TR 24028:2020   | Document intended use + limitations                      |
+| Data qual. | ISO/IEC 25012:2008      | Declared schema, provenance, quality dimensions          |
+| Security   | ISO/IEC 27001:2022      | Append-only audit trail, no PII in logs                  |
+| Privacy    | ISO/IEC 27701:2019      | DPIA required before any real-personal-data use          |
+
+Fairness budgets are enforced as a CI gate — a build fails when the gap
+exceeds the model card's declared threshold. Reference implementation
+lives in `jyo-giddyup/lunning-` on the `claude/fair-efficient-models-g9gC3`
+branch.
+
+> **Status of this package against the baseline:** the synthetic data is
+> non-personal so DPIA is N/A; intended use + limitations are documented
+> in `MODEL_CARD.md`; fairness gates and full audit-log integration are
+> tracked as follow-up work.
+
+## nil-predictor
+
 Five stacked targets are trained from a single feature set:
 
-| Target        | Type           | Estimator                              |
-| ------------- | -------------- | -------------------------------------- |
-| `valuation`   | Regression     | GradientBoosting + log-target wrapper  |
-| `deal_count`  | Poisson regr.  | HistGradientBoosting (poisson loss)    |
-| `tier`        | 4-class classif. | GradientBoostingClassifier            |
-| `portal`      | Binary         | LogisticRegression                     |
-| `drafted`     | Binary         | GradientBoostingClassifier             |
+| Target        | Type           | Estimator                                      |
+| ------------- | -------------- | ---------------------------------------------- |
+| `valuation`   | Regression     | GradientBoosting + log-target wrapper          |
+| `deal_count`  | Poisson regr.  | HistGradientBoosting (poisson loss)            |
+| `tier`        | 4-class classif. | GradientBoostingClassifier                  |
+| `portal`      | Binary         | LogisticRegression + isotonic calibration      |
+| `drafted`     | Binary         | GradientBoostingClassifier + isotonic calib.   |
 
 Inputs:
 
@@ -28,19 +54,29 @@ Inputs:
 ```bash
 pip install -r requirements.txt
 # or, for an editable install with console scripts:
-pip install -e .
+pip install -e ".[api]"
 ```
 
 ## Train
 
 ```bash
-python -m nil_predictor.train --n 5000 --out artifacts/
+python -m nil_predictor.train --n 10000 --out artifacts/
 ```
 
 Writes `artifacts/<target>.joblib` for each model and a combined
 `artifacts/metrics.json`.
 
-## Predict
+## Serve (HTTP)
+
+```bash
+uvicorn nil_predictor.api:app --host 0.0.0.0 --port 8000
+# or build the docker image:
+docker build -t nil-predictor . && docker run -p 8000:8000 nil-predictor
+```
+
+Endpoints: `GET /health`, `GET /schema`, `GET /explain?top_k=N`, `POST /predict`.
+
+## Predict (CLI)
 
 ```bash
 echo '{
