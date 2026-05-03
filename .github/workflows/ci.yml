@@ -19,6 +19,43 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -e ".[dev]"
+          pip install -e ".[dev,api]"
       - name: Run pytest
         run: pytest -q
+
+      - name: Train smoke
+        run: |
+          python -m nil_predictor.train --n 2000 --seed 1 --out artifacts/
+          test -f artifacts/valuation.joblib
+          test -f artifacts/metrics.json
+          test -f artifacts/fairness.json
+          test -f artifacts/audit.log
+
+      - name: Fairness gate (ISO/IEC TR 24027)
+        run: python -m nil_predictor.fairness_check --artifacts artifacts/
+
+  stage_separation:
+    name: Stage-separation guard
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Block PRs that touch >1 modeling stage
+        run: |
+          base="origin/${{ github.base_ref }}"
+          git fetch origin "${{ github.base_ref }}" --depth=50
+          changed=$(git diff --name-only "$base"...HEAD | grep -E '^src/nil_predictor/(amateur|pro|hs|intl)/' || true)
+          if [ -z "$changed" ]; then
+            echo "No stage subtree touched — skip."
+            exit 0
+          fi
+          stages=$(echo "$changed" | awk -F/ '{print $3}' | sort -u)
+          n=$(echo "$stages" | wc -l)
+          echo "Stages touched: $stages"
+          if [ "$n" -gt 1 ]; then
+            echo "::error::PR touches multiple stages: $stages"
+            exit 1
+          fi

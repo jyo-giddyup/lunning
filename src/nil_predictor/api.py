@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from . import audit
 from .features import FEATURE_COLUMNS
 from .models import TARGETS
 from .predict import predict as _predict
@@ -94,12 +95,24 @@ def predict_one(payload: Athlete | list[Athlete] | PredictRequest) -> dict[str, 
         records = [a.model_dump() for a in payload.athletes]
 
     art = _artifacts_dir()
+    request_id = audit.emit(
+        "predict.request",
+        payload={"n_records": len(records), "artifacts_dir": str(art)},
+    )["request_id"]
     if not art.exists():
+        audit.emit("predict.error", payload={"error_kind": "missing_artifacts"},
+                   request_id=request_id)
         raise HTTPException(status_code=503, detail=f"artifacts dir not found: {art}")
     try:
         preds = _predict(records, art)
     except FileNotFoundError as e:
+        audit.emit("predict.error", payload={"error_kind": "missing_artifact"},
+                   request_id=request_id)
         raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
+        audit.emit("predict.error", payload={"error_kind": "validation"},
+                   request_id=request_id)
         raise HTTPException(status_code=400, detail=str(e))
-    return {"predictions": preds, "count": len(preds)}
+    audit.emit("predict.response", payload={"n_records": len(preds)},
+               request_id=request_id)
+    return {"predictions": preds, "count": len(preds), "request_id": request_id}

@@ -60,21 +60,38 @@ Holdout n=10,000, seed=7, 80/20 split:
 | Synthetic → real distribution shift    | High     | Block prod deploy until real-data eval    |
 | Probability miscalibration on real data| Medium   | Recalibrate via CalibratedClassifierCV    |
 
-## Fairness baseline (TODO)
+## Fairness — declared thresholds (ISO/IEC TR 24027:2021)
 
-Per the org standards baseline, the next iteration must add:
-- Demographic-parity gap on `drafted` and `tier` across `sport` (a
-  proxy for gender) and `conference` (a proxy for school resources).
-- Equalized-odds gap on `drafted` (TPR/FPR per group).
-- A CI gate that fails when gaps exceed declared thresholds.
+Computed on the holdout split of every training run and gated in CI.
+Groups are derived from the existing features:
 
-These are tracked as follow-up; not yet implemented in this commit.
+- `conference_tier`: P5 (SEC, Big Ten, Big 12, ACC, Pac-12) vs G5
+  (Big East, AAC, MWC) vs subdivision (FCS, D2)
+- `gender_proxy`: men's vs women's sport partitions
 
-## Governance
+| Check                                              | Threshold |
+| -------------------------------------------------- | --------- |
+| `drafted_dp_gap_conference_tier`                   | ≤ 0.30    |
+| `drafted_eo_gap_conference_tier`                   | ≤ 0.30    |
+| `portal_dp_gap_conference_tier`                    | ≤ 0.20    |
+| `tier_dp_gap_conference_tier` (top-tier selection) | ≤ 0.30    |
+| `valuation_bias_gap_gender_proxy_log10`            | ≤ 0.40    |
 
-- License / ownership: internal only at this time.
-- Audit trail: not yet emitted (TODO — required by ISO/IEC 42001:2023).
-- DPIA: N/A (synthetic data).
+Builds fail when any threshold is exceeded. The synthetic generator
+produces large by-design gaps across `gender_proxy` for valuation —
+real-data thresholds will tighten in the next iteration. Source
+implementation: `nil_predictor.fairness`.
+
+## Governance — ISO/IEC 42001:2023 + 27001:2022
+
+- **License / ownership:** internal only at this time.
+- **Audit trail:** append-only JSONL at `<artifacts>/audit.log`
+  (override via `NIL_AUDIT_LOG`). Events: `train.start`,
+  `train.complete`, `predict.request`, `predict.response`,
+  `predict.error`. Logs payload digests, never raw inputs — no PII
+  even when real data replaces the synthetic generator.
+- **DPIA:** N/A (synthetic data); required before any real-personal-
+  data ingestion (ISO/IEC 27701:2019).
 
 ## Contact
 
