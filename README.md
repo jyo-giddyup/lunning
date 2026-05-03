@@ -1,8 +1,6 @@
 # lunning
 
-Prediction-model work for this org follows a fair, efficient, and compliant
-baseline. The reference implementation lives in `jyo-giddyup/lunning-` on the
-`claude/fair-efficient-models-g9gC3` branch.
+Multi-target prediction models for college athlete NIL outcomes.
 
 ## Standards baseline
 
@@ -19,4 +17,83 @@ Any prediction model added to this repo MUST:
 | Privacy    | ISO/IEC 27701:2019      | DPIA required before any real-personal-data use          |
 
 Fairness budgets are enforced as a CI gate — a build fails when the gap
-exceeds the model card's declared threshold.
+exceeds the model card's declared threshold. Reference implementation
+lives in `jyo-giddyup/lunning-` on the `claude/fair-efficient-models-g9gC3`
+branch.
+
+> **Status of this package against the baseline:** the synthetic data is
+> non-personal so DPIA is N/A; intended use + limitations are documented
+> in `MODEL_CARD.md`; fairness gates and full audit-log integration are
+> tracked as follow-up work.
+
+## nil-predictor
+
+Five stacked targets are trained from a single feature set:
+
+| Target        | Type           | Estimator                                      |
+| ------------- | -------------- | ---------------------------------------------- |
+| `valuation`   | Regression     | GradientBoosting + log-target wrapper          |
+| `deal_count`  | Poisson regr.  | HistGradientBoosting (poisson loss)            |
+| `tier`        | 4-class classif. | GradientBoostingClassifier                  |
+| `portal`      | Binary         | LogisticRegression + isotonic calibration      |
+| `drafted`     | Binary         | GradientBoostingClassifier + isotonic calib.   |
+
+Inputs:
+
+- `sport`, `position`, `conference`, `year`
+- `starter` (bool), `performance_score` (0–100)
+- `instagram_followers`, `tiktok_followers`, `twitter_followers`
+
+> Real On3/Opendorse data is not bundled. The included generator
+> produces a deterministic, hand-calibrated synthetic dataset so the
+> full pipeline runs offline. Swap in real data by replacing
+> `nil_predictor.data.generate`.
+
+## Install
+
+```bash
+pip install -r requirements.txt
+# or, for an editable install with console scripts:
+pip install -e ".[api]"
+```
+
+## Train
+
+```bash
+python -m nil_predictor.train --n 10000 --out artifacts/
+```
+
+Writes `artifacts/<target>.joblib` for each model and a combined
+`artifacts/metrics.json`.
+
+## Serve (HTTP)
+
+```bash
+uvicorn nil_predictor.api:app --host 0.0.0.0 --port 8000
+# or build the docker image:
+docker build -t nil-predictor . && docker run -p 8000:8000 nil-predictor
+```
+
+Endpoints: `GET /health`, `GET /schema`, `GET /explain?top_k=N`, `POST /predict`.
+
+## Predict (CLI)
+
+```bash
+echo '{
+  "sport": "football",
+  "position": "QB",
+  "conference": "SEC",
+  "year": "JR",
+  "starter": true,
+  "performance_score": 87,
+  "instagram_followers": 250000,
+  "tiktok_followers": 180000,
+  "twitter_followers": 90000
+}' | python -m nil_predictor.predict --artifacts artifacts/
+```
+
+## Test
+
+```bash
+pytest -q
+```
