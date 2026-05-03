@@ -32,8 +32,13 @@ Open http://localhost:3000.
 2. Push this repo to GitHub (already done if you're reading this on github.com).
 3. Import the repo on Vercel. Set env vars from `.env.example`.
 4. Deploy. Live within 60 seconds.
+5. (Optional) Custom domain: see [`docs/ORG_SETUP.md`](./docs/ORG_SETUP.md).
 
 No paywalls, no auth flow yet — anyone with a game URL can score. Treat URLs as semi-private until v1.1 adds device signing.
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
 
 ## License
 
@@ -41,10 +46,10 @@ MIT — see [LICENSE](./LICENSE).
 
 ## Legal
 
-Legal scaffolding lives in [`legal/`](./legal/README.md): privacy policy, terms of service, security policy, accessibility statement, DPA template. **All templates — not legal advice. Have counsel review before launch.**
+Legal scaffolding lives in [`legal/`](./legal/README.md): privacy policy, terms of service, security policy, accessibility statement. **All templates — not legal advice. Have counsel review before launch.**
 
 ## Reporting issues
 
-- Bugs / features: open a GitHub issue.
+- Bugs / features: open a GitHub issue (templates provided).
 - Security: see [`legal/SECURITY.md`](./legal/SECURITY.md).
 - Accessibility barriers: see [`legal/ACCESSIBILITY.md`](./legal/ACCESSIBILITY.md).

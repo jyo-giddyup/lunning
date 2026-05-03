@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jyo-giddyup/lunning/blob/main/legal/SECURITY.md
+    about: Do not open a public issue — follow the disclosure policy.
+  - name: Accessibility barrier
+    url: https://github.com/jyo-giddyup/lunning/blob/main/legal/ACCESSIBILITY.md
+    about: How to report a barrier and what to expect.
