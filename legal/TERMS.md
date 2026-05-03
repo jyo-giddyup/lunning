@@ -1,58 +1,44 @@
 # Terms of Service — TEMPLATE
 
-**This is a template, not legal advice.** Have an attorney review and adapt it before publishing. Specific clauses (governing law, arbitration, class-action waiver, limitation of liability, indemnity) are jurisdiction-sensitive and may be unenforceable if drafted incorrectly.
+**This is a template, not legal advice.** Specific clauses (governing law, liability cap, indemnity) need attorney review.
 
 _Last updated: TODO_
 
 ## 1. Acceptance
 
-By using lunning (the "Service") you agree to these Terms. If you do not agree, do not use the Service.
+By using lunning (the "Service") you agree to these Terms.
 
-## 2. Eligibility
+## 2. Acceptable use
 
-You must be at least the age of majority in your jurisdiction to use the Service. The Service is not directed at children under 13 (or 16 in the EU).
+Don't use the Service to:
 
-## 3. Acceptable use
-
-You agree not to:
-
-- Use the Service to harass, defame, or violate anyone's rights.
-- Upload illegal content or content that infringes intellectual property.
-- Attempt to interfere with the Service's operation, probe for vulnerabilities (except per `legal/SECURITY.md`), or scrape at abusive volumes.
-- Use the Service to make decisions in regulated contexts (e.g. official tournament records, gambling, wagering) without your own independent verification.
+- Harass, defame, or violate anyone's rights.
+- Upload illegal or infringing content.
+- Probe for vulnerabilities outside the channel in `legal/SECURITY.md`.
+- Make decisions in contexts with material consequences (official tournaments, gambling) without independent verification.
 
 We may suspend or terminate access for violations.
 
-## 4. User content
+## 3. Your content
 
-You retain ownership of content you submit (game titles, side names, notes, score events). You grant us a non-exclusive, worldwide, royalty-free license to host, display, and operate on that content solely to provide the Service.
+You keep ownership of what you submit. You grant us the license needed to host and display it for the Service.
 
-## 5. No warranty
+## 4. No warranty
 
-THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTY OF ANY KIND. WE DO NOT WARRANT THAT THE SERVICE WILL BE UNINTERRUPTED, ERROR-FREE, OR THAT SCORE DATA WILL BE PRESERVED.
+THE SERVICE IS PROVIDED "AS IS". WE DO NOT WARRANT IT WILL BE UNINTERRUPTED OR THAT YOUR DATA WILL BE PRESERVED. DO NOT RELY ON THE SERVICE AS THE SOLE RECORD OF ANY CONTEST WITH MATERIAL CONSEQUENCES.
 
-You should not rely on the Service as the sole record of any contest with material consequences.
+## 5. Limitation of liability
 
-## 6. Limitation of liability
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, OUR AGGREGATE LIABILITY WILL NOT EXCEED USD $50 OR THE AMOUNT YOU PAID US IN THE PRIOR 12 MONTHS, WHICHEVER IS GREATER. WE ARE NOT LIABLE FOR INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES.
 
-TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, DATA, OR GOODWILL ARISING FROM YOUR USE OF THE SERVICE.
+## 6. Governing law
 
-IN ANY CASE OUR AGGREGATE LIABILITY WILL NOT EXCEED USD $50 OR THE AMOUNT YOU PAID US IN THE PRIOR 12 MONTHS, WHICHEVER IS GREATER.
+These Terms are governed by the laws of TODO. Disputes will be resolved in the courts of TODO.
 
-Some jurisdictions do not allow these limitations; in such cases this section applies to the maximum extent permitted.
+## 7. Changes
 
-## 7. Indemnity
+We may update these Terms; continued use after changes means you accept them.
 
-You agree to indemnify and hold us harmless from claims arising out of your misuse of the Service or violation of these Terms.
-
-## 8. Governing law and disputes
-
-These Terms are governed by the laws of TODO (state/country). Disputes will be resolved in the courts of TODO. (Counsel: consider arbitration / class-action waiver only after weighing enforceability in target jurisdictions.)
-
-## 9. Changes
-
-We may revise these Terms; the new version takes effect when posted. Continued use after changes constitutes acceptance.
-
-## 10. Contact
+## 8. Contact
 
 TODO@TODO-domain.com

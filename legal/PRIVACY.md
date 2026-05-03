@@ -1,62 +1,35 @@
 # Privacy Policy — TEMPLATE
 
-**This is a template, not legal advice.** Have an attorney review and adapt it before publishing.
+**This is a template, not legal advice.** Have an attorney review before publishing.
 
 _Last updated: TODO_
 
-## Who we are
-
-lunning ("we", "us") provides an open scorekeeping web application at TODO-domain.com.
-
-For privacy questions, contact: TODO@TODO-domain.com.
-
 ## What we collect
 
-- **Game data you enter:** game titles, side/team/player names, score events. This may include personal names if you choose to enter them. We treat names you enter as personal data.
-- **Technical data:** IP address (collected by our hosting provider Vercel for security and abuse prevention), browser user agent, request timestamps. We do not set tracking cookies.
-- **No analytics, no advertising trackers, no third-party tags** as of TODO-date.
+- **Game data you enter**: titles, side/team/player names, score events. If you put real names in there, that's personal data — we treat it as such.
+- **Technical data** collected by our hosting provider (IP, user agent, request timestamps) for security and abuse prevention.
+- **No accounts, email, payments, location, or tracking cookies** in the current version.
+- **No analytics** beyond what our hosts (Supabase, Vercel) collect for operational purposes.
 
-## What we do not collect
+## Why
 
-- We do not ask for accounts, email, phone, or payment information in the current version.
-- We do not collect precise geolocation.
-- We do not collect children's data knowingly. The service is not directed at children under 13 (US) / 16 (EU). If you are a parent and believe we have collected data from your child, contact us and we will delete it.
+To run the scorekeeping service you asked for, and to prevent abuse.
 
-## Why we process it
+## Who has access
 
-- To operate the scorekeeping service you requested (legal basis: contract / legitimate interest).
-- To prevent abuse and secure the service (legal basis: legitimate interest).
+- **Supabase** hosts the database — https://supabase.com/privacy
+- **Vercel** hosts the application — https://vercel.com/legal/privacy-policy
 
-## Who we share it with
+We do not sell or share data with anyone else.
 
-Subprocessors that have access to data you submit:
+## How long
 
-- **Supabase** — database hosting (PostgreSQL). Privacy policy: https://supabase.com/privacy
-- **Vercel** — application hosting and edge network. Privacy policy: https://vercel.com/legal/privacy-policy
+Game data persists until you ask us to delete it or it's removed for abuse. Email TODO@TODO-domain.com to request deletion of any game.
 
-We do not sell or rent personal data.
+## Children
 
-## Where data is stored
+The service is not directed at children under 13. If you believe we have data on someone under 13, contact us and we will delete it.
 
-Game data is stored in the Supabase region you select when provisioning your project. Default may be in the United States. If you have EU users, configure an EU region and put SCCs in place with your subprocessors.
+## Contact
 
-## How long we keep it
-
-Game data is retained indefinitely unless you request deletion or it is removed for abuse. We will adopt a written retention schedule before launch.
-
-## Your rights
-
-Depending on your jurisdiction (EU/UK GDPR, California CCPA/CPRA, etc.), you may have rights to:
-
-- Access the personal data we hold about you.
-- Correct inaccurate data.
-- Delete your data ("right to erasure").
-- Object to or restrict processing.
-- Data portability.
-- Lodge a complaint with your supervisory authority.
-
-To exercise any of these, email TODO@TODO-domain.com. We aim to respond within 30 days.
-
-## Changes
-
-We will post any changes to this policy at this URL and update the "Last updated" date.
+TODO@TODO-domain.com
