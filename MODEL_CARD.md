@@ -14,6 +14,12 @@ that materially affect a person's livelihood without human review.**
   national origin, religion, age, disability).
 - Sports betting / line-setting.
 
+> **Stage-separation rule:** amateur and pro outcomes live in separate
+> packages, model cards, datasets, branches, artifacts, and HTTP
+> routes. See [`CLAUDE.md`](./CLAUDE.md) for the full rule. The same
+> ideology applies to any future stage boundary (high-school,
+> international, etc.).
+
 ## Data
 
 - **Source:** `nil_predictor.data.generate` — deterministic synthetic
