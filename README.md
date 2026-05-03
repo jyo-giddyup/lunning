@@ -34,3 +34,17 @@ Open http://localhost:3000.
 4. Deploy. Live within 60 seconds.
 
 No paywalls, no auth flow yet — anyone with a game URL can score. Treat URLs as semi-private until v1.1 adds device signing.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
+
+## Legal
+
+Legal scaffolding lives in [`legal/`](./legal/README.md): privacy policy, terms of service, security policy, accessibility statement, DPA template. **All templates — not legal advice. Have counsel review before launch.**
+
+## Reporting issues
+
+- Bugs / features: open a GitHub issue.
+- Security: see [`legal/SECURITY.md`](./legal/SECURITY.md).
+- Accessibility barriers: see [`legal/ACCESSIBILITY.md`](./legal/ACCESSIBILITY.md).
