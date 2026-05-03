@@ -26,17 +26,22 @@ from .models import TARGETS
 from .predict import predict as _predict
 from .explain import per_target_importances
 
+# Hard cap on records per request — prevents single-request DoS via giant batches.
+# Override with NIL_MAX_BATCH env var. 100 fits comfortably under typical 30s
+# request timeouts (latency is ~0.2 ms/record on this model).
+MAX_BATCH = max(1, int(os.environ.get("NIL_MAX_BATCH", "100")))
+
 
 class Athlete(BaseModel):
-    sport: str
-    position: str
-    conference: str
-    year: str
+    sport: str = Field(max_length=64)
+    position: str = Field(max_length=64)
+    conference: str = Field(max_length=64)
+    year: str = Field(max_length=8)
     starter: bool
     performance_score: float = Field(ge=0, le=100)
-    instagram_followers: int = Field(ge=0)
-    tiktok_followers: int = Field(ge=0)
-    twitter_followers: int = Field(ge=0)
+    instagram_followers: int = Field(ge=0, le=10**9)
+    tiktok_followers: int = Field(ge=0, le=10**9)
+    twitter_followers: int = Field(ge=0, le=10**9)
 
 
 class PredictRequest(BaseModel):
@@ -48,7 +53,7 @@ def _artifacts_dir() -> Path:
     return Path(raw).resolve()
 
 
-app = FastAPI(title="nil-predictor", version="0.1.0")
+app = FastAPI(title="nil-predictor", version="0.1.1")
 
 
 @app.get("/health")
@@ -64,6 +69,7 @@ def health() -> dict[str, Any]:
         "artifacts_dir": str(art),
         "models_present": present,
         "models_missing": missing,
+        "max_batch": MAX_BATCH,
     }
 
 
@@ -72,11 +78,14 @@ def schema() -> dict[str, Any]:
     return {
         "required_fields": FEATURE_COLUMNS,
         "targets": [t.name for t in TARGETS],
+        "max_batch": MAX_BATCH,
     }
 
 
 @app.get("/explain")
 def explain(top_k: int = 15) -> dict[str, Any]:
+    # Bound top_k so a malicious caller can't request a huge response.
+    top_k = max(1, min(int(top_k), 100))
     art = _artifacts_dir()
     if not art.exists():
         raise HTTPException(status_code=503, detail=f"artifacts dir not found: {art}")
@@ -93,6 +102,13 @@ def predict_one(payload: Athlete | list[Athlete] | PredictRequest) -> dict[str, 
         if not payload.athletes:
             raise HTTPException(status_code=400, detail="athletes array is empty")
         records = [a.model_dump() for a in payload.athletes]
+
+    if len(records) > MAX_BATCH:
+        # 413 Payload Too Large — single-request DoS guard.
+        raise HTTPException(
+            status_code=413,
+            detail=f"batch size {len(records)} exceeds limit {MAX_BATCH}",
+        )
 
     art = _artifacts_dir()
     request_id = audit.emit(
