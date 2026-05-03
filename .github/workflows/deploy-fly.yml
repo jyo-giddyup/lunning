@@ -1,0 +1,47 @@
+name: deploy-fly
+
+on:
+  workflow_run:
+    workflows: [publish-image]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-fly
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::FLY_API_TOKEN secret is not set. Add it at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          flyctl deploy --remote-only --image ghcr.io/${{ github.repository_owner }}/nil-predictor:latest
+      - name: Smoke test
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -e
+          URL="https://nil-predictor.fly.dev"
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "$URL/health" >/dev/null 2>&1; then
+              echo "### Deploy live" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+              curl -fsS "$URL/health" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::/health did not respond within 60s"
