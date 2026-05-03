@@ -33,7 +33,9 @@ def build_preprocessor() -> ColumnTransformer:
         ("scale", StandardScaler()),
     ])
     numeric_pipe = Pipeline([("scale", StandardScaler())])
-    bool_pipe = Pipeline([("cast", FunctionTransformer(_to_float))])
+    bool_pipe = Pipeline([
+        ("cast", FunctionTransformer(_to_float, feature_names_out="one-to-one")),
+    ])
 
     try:
         ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)

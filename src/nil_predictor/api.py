@@ -8,6 +8,7 @@ Run:
 Endpoints:
     GET  /health              -> {"ok": true, "models": [...]}
     GET  /schema              -> required feature columns
+    GET  /explain?top_k=15    -> per-target feature importances
     POST /predict             -> single athlete or batch (array / {athletes: [...]})
 """
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pydantic import BaseModel, Field
 from .features import FEATURE_COLUMNS
 from .models import TARGETS
 from .predict import predict as _predict
+from .explain import per_target_importances
 
 
 class Athlete(BaseModel):
@@ -70,6 +72,14 @@ def schema() -> dict[str, Any]:
         "required_fields": FEATURE_COLUMNS,
         "targets": [t.name for t in TARGETS],
     }
+
+
+@app.get("/explain")
+def explain(top_k: int = 15) -> dict[str, Any]:
+    art = _artifacts_dir()
+    if not art.exists():
+        raise HTTPException(status_code=503, detail=f"artifacts dir not found: {art}")
+    return per_target_importances(art, top_k=top_k)
 
 
 @app.post("/predict")

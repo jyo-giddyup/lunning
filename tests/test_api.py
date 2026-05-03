@@ -66,6 +66,18 @@ def test_predict_batch_via_athletes_key(client):
     assert r.json()["count"] == 2
 
 
+def test_explain_returns_top_features(client):
+    r = client.get("/explain?top_k=3")
+    assert r.status_code == 200
+    body = r.json()
+    # At least one target must produce feature importances.
+    available = [t for t, v in body.items() if v.get("available")]
+    assert len(available) >= 3
+    sample = body[available[0]]
+    assert len(sample["top_features"]) <= 3
+    assert sample["top_features"][0]["importance"] >= 0
+
+
 def test_predict_validates_payload(client):
     # Object missing required Athlete fields gets coerced into the
     # PredictRequest branch with athletes=None, which we reject as 400.

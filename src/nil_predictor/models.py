@@ -3,14 +3,15 @@
 valuation     : log-transformed regression  (GradientBoosting)
 deal_count    : Poisson regression           (HistGradientBoosting, poisson loss)
 tier          : 4-class classification       (GradientBoosting)
-portal        : binary classification        (LogisticRegression)
-drafted       : binary classification        (GradientBoosting)
+portal        : binary classification        (LogisticRegression + isotonic calibration)
+drafted       : binary classification        (GradientBoosting + isotonic calibration)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.ensemble import (
     GradientBoostingClassifier,
@@ -69,11 +70,15 @@ def build_model(target: str) -> Pipeline:
             n_estimators=200, max_depth=3, learning_rate=0.07, random_state=0
         )
     elif target == "portal":
-        estimator = LogisticRegression(max_iter=400, C=1.0, n_jobs=None)
+        # Linear features capture most of the signal here; isotonic calibration
+        # on top makes the predicted probabilities reliable.
+        base = LogisticRegression(max_iter=400, C=1.0)
+        estimator = CalibratedClassifierCV(base, method="isotonic", cv=3)
     elif target == "drafted":
-        estimator = GradientBoostingClassifier(
+        base = GradientBoostingClassifier(
             n_estimators=200, max_depth=3, learning_rate=0.07, random_state=0
         )
+        estimator = CalibratedClassifierCV(base, method="isotonic", cv=3)
     else:
         raise ValueError(f"unknown target: {target}")
 
