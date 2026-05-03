@@ -6,18 +6,27 @@ Run:
     uvicorn nil_predictor.api:app --host 0.0.0.0 --port 8000
 
 Endpoints:
-    GET  /health              -> {"ok": true, "models": [...]}
-    GET  /schema              -> required feature columns
-    GET  /explain?top_k=15    -> per-target feature importances
-    POST /predict             -> single athlete or batch (array / {athletes: [...]})
+    GET  /health              -> {"ok": true, "models": [...]}     (always public)
+    GET  /schema              -> required feature columns           (gated if NIL_API_KEY set)
+    GET  /explain?top_k=15    -> per-target feature importances     (gated if NIL_API_KEY set)
+    POST /predict             -> single athlete or batch            (gated if NIL_API_KEY set)
+
+Authentication:
+    If the NIL_API_KEY env var is set, every endpoint except /health
+    requires an `X-API-Key: <key>` header that matches it. Comparison is
+    constant-time (secrets.compare_digest) to avoid timing attacks. If
+    NIL_API_KEY is unset or empty, the service is open — useful for local
+    development; set NIL_API_KEY in production.
 """
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import audit
@@ -27,9 +36,13 @@ from .predict import predict as _predict
 from .explain import per_target_importances
 
 # Hard cap on records per request — prevents single-request DoS via giant batches.
-# Override with NIL_MAX_BATCH env var. 100 fits comfortably under typical 30s
-# request timeouts (latency is ~0.2 ms/record on this model).
 MAX_BATCH = max(1, int(os.environ.get("NIL_MAX_BATCH", "100")))
+
+# Optional API key gate. Empty / unset = open. Always set in production.
+NIL_API_KEY = os.environ.get("NIL_API_KEY", "").strip()
+
+# Endpoints that bypass the key gate (Fly health checks, k8s probes, etc.).
+PUBLIC_PATHS = frozenset({"/health"})
 
 
 class Athlete(BaseModel):
@@ -53,7 +66,18 @@ def _artifacts_dir() -> Path:
     return Path(raw).resolve()
 
 
-app = FastAPI(title="nil-predictor", version="0.1.1")
+app = FastAPI(title="nil-predictor", version="0.1.2")
+
+
+@app.middleware("http")
+async def api_key_gate(request: Request, call_next):
+    if NIL_API_KEY and request.url.path not in PUBLIC_PATHS:
+        provided = request.headers.get("x-api-key", "")
+        # constant-time compare; secrets.compare_digest requires same-length strs
+        # so we hash both sides via fixed-width comparison.
+        if not provided or not secrets.compare_digest(provided, NIL_API_KEY):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 @app.get("/health")
@@ -70,6 +94,7 @@ def health() -> dict[str, Any]:
         "models_present": present,
         "models_missing": missing,
         "max_batch": MAX_BATCH,
+        "auth_required": bool(NIL_API_KEY),
     }
 
 
@@ -84,7 +109,6 @@ def schema() -> dict[str, Any]:
 
 @app.get("/explain")
 def explain(top_k: int = 15) -> dict[str, Any]:
-    # Bound top_k so a malicious caller can't request a huge response.
     top_k = max(1, min(int(top_k), 100))
     art = _artifacts_dir()
     if not art.exists():
@@ -104,7 +128,6 @@ def predict_one(payload: Athlete | list[Athlete] | PredictRequest) -> dict[str, 
         records = [a.model_dump() for a in payload.athletes]
 
     if len(records) > MAX_BATCH:
-        # 413 Payload Too Large — single-request DoS guard.
         raise HTTPException(
             status_code=413,
             detail=f"batch size {len(records)} exceeds limit {MAX_BATCH}",
