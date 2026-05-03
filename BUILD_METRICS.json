@@ -1,0 +1,35 @@
+{
+  "config": {
+    "n_athletes": 10000,
+    "seed": 7,
+    "test_size": 0.2
+  },
+  "metrics": {
+    "valuation": {
+      "mae": 1850.59,
+      "rmse": 7443.30,
+      "r2": 0.5026
+    },
+    "deal_count": {
+      "mae": 1.5304,
+      "rmse": 1.9636,
+      "r2": 0.4844
+    },
+    "tier": {
+      "accuracy": 0.7995,
+      "f1_macro": 0.5330
+    },
+    "portal": {
+      "accuracy": 0.8280,
+      "f1_macro": 0.4530,
+      "roc_auc": 0.6444,
+      "log_loss": 0.4419
+    },
+    "drafted": {
+      "accuracy": 0.8640,
+      "f1_macro": 0.7585,
+      "roc_auc": 0.9277,
+      "log_loss": 0.2408
+    }
+  }
+}
