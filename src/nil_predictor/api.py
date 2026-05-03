@@ -10,6 +10,8 @@ Endpoints:
     GET  /schema              -> required feature columns
     GET  /explain?top_k=15    -> per-target feature importances
     POST /predict             -> single athlete or batch (array / {athletes: [...]})
+    POST /checkout            -> create a Stripe Checkout Session
+    POST /webhooks/stripe     -> Stripe webhook receiver
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from . import audit
+from . import audit, payments
 from .features import FEATURE_COLUMNS
 from .models import TARGETS
 from .predict import predict as _predict
@@ -49,6 +51,7 @@ def _artifacts_dir() -> Path:
 
 
 app = FastAPI(title="nil-predictor", version="0.1.0")
+app.include_router(payments.router)
 
 
 @app.get("/health")
