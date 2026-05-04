@@ -41,17 +41,36 @@ def predict(records: list[dict], artifacts_dir: str | Path) -> list[dict]:
     out: list[dict[str, Any]] = [{} for _ in range(len(df))]
 
     for spec in TARGETS:
-        model = bundles[spec.name]["model"]
-        preds = model.predict(X)
+        bundle = bundles[spec.name]
+        model = bundle["model"]
+        # Compute proba first so a tuned threshold (saved at train time)
+        # can override the default 0.5 cutoff for binary classifiers.
+        proba = None
+        classes: list = []
+        threshold = bundle.get("threshold")
+        if spec.kind == "classification" and hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X)
+            classes = list(model.classes_)
+
+        if (
+            spec.kind == "classification"
+            and threshold is not None
+            and proba is not None
+            and proba.shape[1] == 2
+            and True in classes
+        ):
+            pos_idx = classes.index(True)
+            preds = np.where(proba[:, pos_idx] >= threshold, True, False)
+        else:
+            preds = model.predict(X)
+
         for i, value in enumerate(preds):
             if spec.kind == "regression":
                 out[i][spec.name] = float(np.round(value, 2))
             else:
                 out[i][spec.name] = str(value)
 
-        if spec.kind == "classification" and hasattr(model, "predict_proba"):
-            proba = model.predict_proba(X)
-            classes = list(model.classes_)
+        if proba is not None:
             for i, row in enumerate(proba):
                 out[i][f"{spec.name}_proba"] = {
                     str(c): float(np.round(p, 4)) for c, p in zip(classes, row)

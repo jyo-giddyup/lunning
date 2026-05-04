@@ -54,6 +54,49 @@ def _evaluate(spec, y_true, y_pred, y_proba=None) -> dict:
     return metrics
 
 
+def _dp_gap(pred: np.ndarray, protected: np.ndarray) -> float:
+    """Demographic-parity gap = |P(yhat=1|A=0) - P(yhat=1|A=1)|."""
+    rates = []
+    for g in np.unique(protected):
+        m = protected == g
+        if m.any():
+            rates.append(float(pred[m].mean()))
+    if len(rates) < 2:
+        return 0.0
+    return float(max(rates) - min(rates))
+
+
+def _find_f1_threshold(
+    y_true: np.ndarray,
+    score: np.ndarray,
+    protected: np.ndarray | None = None,
+    dp_budget: float = 0.05,
+) -> float:
+    """Sweep thresholds on the holdout and return the F1-optimal one.
+
+    Calibrated low-base-rate classifiers (portal in particular) almost never
+    cross the 0.5 default — score percentiles top out below 0.5 even when AUC
+    has signal. Picking the F1-max threshold turns 0% recall into something
+    usable without retraining the classifier itself.
+
+    When `protected` is supplied, thresholds whose demographic-parity gap
+    exceeds `dp_budget` are skipped, so the operating point we ship respects
+    the same fairness budget the CI gate enforces (`tests/test_fairness_gate.py`).
+    """
+    grid = np.linspace(0.05, 0.95, 91)
+    best_thr, best_f1 = 0.5, -1.0
+    for thr in grid:
+        pred = (score >= thr).astype(int)
+        if pred.sum() == 0 or pred.sum() == len(pred):
+            continue
+        if protected is not None and _dp_gap(pred, protected) > dp_budget:
+            continue
+        f1 = f1_score(y_true, pred, average="binary", pos_label=1, zero_division=0)
+        if f1 > best_f1:
+            best_f1, best_thr = float(f1), float(thr)
+    return best_thr
+
+
 def train_all(n: int = 5000, seed: int = 7, out_dir: str | Path = "artifacts") -> dict:
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -89,12 +132,72 @@ def train_all(n: int = 5000, seed: int = 7, out_dir: str | Path = "artifacts") -
 
         y_pred = model.predict(X_test)
         proba = None
+        threshold: float | None = None
         if spec.kind == "classification" and hasattr(model, "predict_proba"):
             proba = model.predict_proba(X_test)
+            classes = list(model.classes_)
+            if proba.shape[1] == 2 and True in classes:
+                pos_idx = classes.index(True)
+                y_test_arr = np.asarray(y_test)
+                y_test_int = (y_test_arr == True).astype(int)  # noqa: E712
+                # Generate a fresh synthetic set for honest threshold tuning.
+                # Tuning and evaluating the threshold on the same data the
+                # estimator was scored against would over-fit the operating
+                # point. The audit set uses a different seed so the threshold
+                # has to generalise — the same property the CI gate enforces.
+                if y_test_int.min() != y_test_int.max():
+                    # Calibration set is independent from the seeds used by
+                    # the on-demand audit (99) and the CI gate (also 99) so
+                    # the threshold is honestly held-out from those checks.
+                    audit_df = generate(DataConfig(n_athletes=5000, seed=4242))
+                    audit_X = audit_df[FEATURE_COLUMNS]
+                    audit_score = model.predict_proba(audit_X)[:, pos_idx]
+                    audit_y = (audit_df[spec.column].to_numpy() == True).astype(int)  # noqa: E712
+                    womens = {"womens_basketball", "womens_soccer", "softball"}
+                    audit_protected = np.array(
+                        [1 if s in womens else 0 for s in audit_df["sport"]],
+                        dtype=int,
+                    )
+                    threshold = _find_f1_threshold(
+                        audit_y,
+                        audit_score,
+                        protected=audit_protected,
+                        dp_budget=0.04,
+                    )
+                    # No-regression guard: ship the tuned threshold only if
+                    # it beats the default 0.5 on macro-F1 (overall classifier
+                    # quality), not just positive-class F1. Otherwise the
+                    # tuning trades too much negative-class accuracy for
+                    # positive-class recall — common at small n where the
+                    # estimator itself is undertrained.
+                    f1m_default = f1_score(
+                        audit_y,
+                        (audit_score >= 0.5).astype(int),
+                        average="macro",
+                        zero_division=0,
+                    )
+                    f1m_tuned = f1_score(
+                        audit_y,
+                        (audit_score >= threshold).astype(int),
+                        average="macro",
+                        zero_division=0,
+                    )
+                    if f1m_tuned < f1m_default:
+                        threshold = None
+                        y_pred = model.predict(X_test)
+                    else:
+                        y_pred = np.where(
+                            proba[:, pos_idx] >= threshold, True, False
+                        )
         report[spec.name] = _evaluate(spec, y_test, y_pred, proba)
+        if threshold is not None:
+            report[spec.name]["threshold"] = threshold
 
         artifact = out_path / f"{spec.name}.joblib"
-        joblib.dump({"model": model, "spec": spec}, artifact)
+        bundle: dict = {"model": model, "spec": spec}
+        if threshold is not None:
+            bundle["threshold"] = threshold
+        joblib.dump(bundle, artifact)
 
         # Build a per-target slice of the holdout for fairness eval.
         idx = X_test.index
