@@ -48,19 +48,41 @@ def predict(records: list[dict], artifacts_dir: str | Path) -> list[dict]:
         proba = None
         classes: list = []
         threshold = bundle.get("threshold")
+        group_thresholds = bundle.get("group_thresholds")
         if spec.kind == "classification" and hasattr(model, "predict_proba"):
             proba = model.predict_proba(X)
             classes = list(model.classes_)
 
         if (
             spec.kind == "classification"
-            and threshold is not None
             and proba is not None
             and proba.shape[1] == 2
             and True in classes
         ):
             pos_idx = classes.index(True)
-            preds = np.where(proba[:, pos_idx] >= threshold, True, False)
+            score = proba[:, pos_idx]
+            if group_thresholds and group_thresholds.get("attribute") == "women_sport":
+                # Per-row threshold lookup. Sport comes from input; missing
+                # column or unknown group falls back to the default_group.
+                domain = set(group_thresholds.get("domain", []))
+                thr_map = group_thresholds.get("thresholds", {})
+                default_g = str(group_thresholds.get("default_group", 0))
+                fallback = float(
+                    thr_map.get(default_g, threshold if threshold is not None else 0.5)
+                )
+                sport_col = df.get("sport")
+                if sport_col is None:
+                    thrs = np.full(len(df), fallback, dtype=float)
+                else:
+                    thrs = np.array([
+                        float(thr_map.get("1" if s in domain else "0", fallback))
+                        for s in sport_col
+                    ])
+                preds = np.where(score >= thrs, True, False)
+            elif threshold is not None:
+                preds = np.where(score >= threshold, True, False)
+            else:
+                preds = model.predict(X)
         else:
             preds = model.predict(X)
 
