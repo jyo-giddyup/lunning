@@ -14,6 +14,10 @@ thresholds. The grouping schema reflects the synthetic dataset:
                               softball, volleyball, gymnastics)
                      "mixed" (track)
 
+    sport            individual sport (per-sport gaps tracked in
+                     fairness.json; not yet enforced as a CI gate —
+                     real-data thresholds tightened in next iteration)
+
 Real data should override these maps by passing custom group_fns.
 """
 from __future__ import annotations
@@ -129,7 +133,10 @@ def regression_gap(
 
 # ---------------------------------------------------------------------------
 # Declared thresholds (also surfaced in MODEL_CARD.md). A fairness CI gate
-# fails the build when any of these are exceeded.
+# fails the build when any of these are exceeded. Per-sport metrics are
+# computed and serialised in fairness.json but are not in this dict yet —
+# the synthetic generator produces large by-design per-sport gaps; real-data
+# thresholds will be added once real data lands.
 DEFAULT_THRESHOLDS: dict[str, float] = {
     "drafted_dp_gap_conference_tier": 0.30,
     "drafted_eo_gap_conference_tier": 0.30,
@@ -195,10 +202,21 @@ def evaluate(
         rep.metrics.append(m)
         _check(rep, "drafted_eo_gap_conference_tier", m["gap"])
 
+        # Per-sport breakdowns (resolves MODEL_CARD risk-register TODO).
+        m = demographic_parity_gap(df, prediction="drafted_pred", group="sport")
+        rep.metrics.append({**m, "note": "per-sport draft selection rate"})
+
+        m = equal_opportunity_gap(df, prediction="drafted_pred", label="drafted",
+                                  group="sport")
+        rep.metrics.append({**m, "note": "per-sport draft TPR"})
+
     if "portal_pred" in df.columns:
         m = demographic_parity_gap(df, prediction="portal_pred", group="_conference_tier")
         rep.metrics.append(m)
         _check(rep, "portal_dp_gap_conference_tier", m["gap"])
+
+        m = demographic_parity_gap(df, prediction="portal_pred", group="sport")
+        rep.metrics.append({**m, "note": "per-sport portal selection rate"})
 
     if "tier_pred" in df.columns:
         # treat the top tier as a positive selection signal
@@ -207,6 +225,9 @@ def evaluate(
         rep.metrics.append({**m, "note": "top-tier (high|elite) selection rate"})
         _check(rep, "tier_dp_gap_conference_tier", m["gap"])
 
+        m = demographic_parity_gap(df, prediction="_tier_top", group="sport")
+        rep.metrics.append({**m, "note": "per-sport top-tier selection rate"})
+
     if {"valuation_pred", "valuation_label"}.issubset(df.columns):
         df["_log_pred"] = np.log10(np.maximum(df["valuation_pred"], 1.0))
         df["_log_label"] = np.log10(np.maximum(df["valuation_label"], 1.0))
@@ -214,5 +235,9 @@ def evaluate(
                            group="_gender_proxy")
         rep.metrics.append({**m, "note": "log10 USD bias gap across gender proxy"})
         _check(rep, "valuation_bias_gap_gender_proxy_log10", abs(m["gap"]))
+
+        m = regression_gap(df, prediction="_log_pred", label="_log_label",
+                           group="sport")
+        rep.metrics.append({**m, "note": "per-sport log10 USD bias gap"})
 
     return rep
