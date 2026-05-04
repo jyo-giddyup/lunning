@@ -189,14 +189,61 @@ def train_all(n: int = 5000, seed: int = 7, out_dir: str | Path = "artifacts") -
                         y_pred = np.where(
                             proba[:, pos_idx] >= threshold, True, False
                         )
+
+                # Per-group thresholds: tune one threshold per protected
+                # group, each with its own no-regression guard. Lets each
+                # cohort hit its own F1 optimum without dragging the others.
+                # Stored alongside the global threshold; predict.py prefers
+                # the per-group map when present.
+                group_thresholds: dict[int, float] | None = None
+                if y_test_int.min() != y_test_int.max() and threshold is not None:
+                    group_thresholds = {}
+                    for g in (0, 1):
+                        mask = audit_protected == g
+                        if mask.sum() < 100:
+                            continue
+                        g_score = audit_score[mask]
+                        g_y = audit_y[mask]
+                        if g_y.min() == g_y.max():
+                            continue
+                        g_thr = _find_f1_threshold(g_y, g_score)
+                        # Per-group no-regression guard against the global
+                        # threshold the bundle ships — if a group's F1 isn't
+                        # better with its own threshold, fall back to global.
+                        f1m_global = f1_score(
+                            g_y, (g_score >= threshold).astype(int),
+                            average="macro", zero_division=0,
+                        )
+                        f1m_g = f1_score(
+                            g_y, (g_score >= g_thr).astype(int),
+                            average="macro", zero_division=0,
+                        )
+                        group_thresholds[g] = g_thr if f1m_g >= f1m_global else threshold
+                    if not group_thresholds:
+                        group_thresholds = None
+
         report[spec.name] = _evaluate(spec, y_test, y_pred, proba)
         if threshold is not None:
             report[spec.name]["threshold"] = threshold
+        if "group_thresholds" in dir() and group_thresholds is not None:
+            report[spec.name]["group_thresholds"] = {
+                str(k): v for k, v in group_thresholds.items()
+            }
 
         artifact = out_path / f"{spec.name}.joblib"
         bundle: dict = {"model": model, "spec": spec}
         if threshold is not None:
             bundle["threshold"] = threshold
+        if "group_thresholds" in dir() and group_thresholds is not None:
+            bundle["group_thresholds"] = {
+                # JSON-friendly keys for the dict; the protected-attribute
+                # rule travels with the bundle so predict.py can derive the
+                # group from the input record without coordinating env vars.
+                "attribute": "women_sport",
+                "domain": ["womens_basketball", "womens_soccer", "softball"],
+                "default_group": 0,
+                "thresholds": {str(k): float(v) for k, v in group_thresholds.items()},
+            }
         joblib.dump(bundle, artifact)
 
         # Build a per-target slice of the holdout for fairness eval.
