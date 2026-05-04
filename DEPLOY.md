@@ -45,6 +45,35 @@ curl -X POST https://nil-predictor.fly.dev/predict \
        "instagram_followers":250000,"tiktok_followers":180000,"twitter_followers":90000}'
 ```
 
+## Stripe billing
+
+The service exposes `POST /checkout` (creates a Stripe Checkout Session) and
+`POST /webhooks/stripe` (receives Stripe events). Before going live:
+
+1. In the Stripe dashboard create a product + recurring price; copy the
+   `price_...` ID.
+2. Add a webhook endpoint pointing at `https://nil-predictor.fly.dev/webhooks/stripe`
+   subscribed to at least `checkout.session.completed`. Copy the `whsec_...`
+   signing secret.
+3. Set Fly secrets (these never appear in logs or the image):
+
+```bash
+flyctl secrets set \
+  STRIPE_SECRET_KEY=sk_live_... \
+  STRIPE_WEBHOOK_SECRET=whsec_... \
+  STRIPE_PRICE_ID=price_... \
+  STRIPE_SUCCESS_URL=https://how-to-do-this.vercel.app/billing/success \
+  STRIPE_CANCEL_URL=https://how-to-do-this.vercel.app/billing/cancel
+```
+
+Use `sk_test_...` / `whsec_test_...` keys against the Stripe test mode first;
+the test card `4242 4242 4242 4242` will succeed.
+
+**Pre-launch legal checklist** (not provided by this repo, get from counsel):
+Terms of Service, Privacy Policy, refund policy, Stripe Tax configured for
+your jurisdictions, and confirmation that your Stripe account's business
+profile is complete.
+
 ## Wire the rest of the stack
 
 In Vercel, set env vars then redeploy:
