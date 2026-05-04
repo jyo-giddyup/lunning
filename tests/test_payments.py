@@ -21,7 +21,12 @@ from fastapi.testclient import TestClient
 
 def _install_stripe_stub(monkeypatch, *, session=None, raise_on_create=None,
                         construct_event=None):
-    """Insert a fake `stripe` module into sys.modules."""
+    """Insert a fake `stripe` module into sys.modules and return it.
+
+    Caller can mutate the returned module afterwards (e.g. swap out
+    Webhook.construct_event) so SignatureVerificationError raised by a
+    boom function and the one caught by the handler are the same class.
+    """
     stripe_mod = types.ModuleType("stripe")
     stripe_mod.api_key = None
 
@@ -125,12 +130,16 @@ def test_webhook_missing_signature_returns_400(app_client, monkeypatch):
 
 
 def test_webhook_invalid_signature_returns_400(app_client, monkeypatch):
+    # Install the stub once, then swap construct_event in place so the
+    # SignatureVerificationError raised by boom is the same class the
+    # handler's `except` clause uses (both come from the same stub).
     stripe_mod = _install_stripe_stub(monkeypatch)
 
     def boom(body, sig, secret):
         raise stripe_mod.error.SignatureVerificationError("bad sig")
 
-    _install_stripe_stub(monkeypatch, construct_event=boom)
+    stripe_mod.Webhook.construct_event = staticmethod(boom)
+
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_x")
     r = app_client.post(
