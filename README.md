@@ -98,6 +98,24 @@ echo '{
 pytest -q
 ```
 
+## Fairness audit
+
+A one-shot fairness audit on the trained binary classifiers (`portal`,
+`drafted`) across protected attributes (Power-4 vs other, men's vs
+women's sport):
+
+```bash
+python scripts/fairness_audit.py \
+  --artifacts artifacts/ \
+  --lunning-src ../lunning-/src \
+  --out FAIRNESS_AUDIT.md
+```
+
+Methodology and budgets come from `lunning-`'s `predictions.fairness`
+module (ISO/IEC TR 24027:2021): DP ≤ 0.05, EO ≤ 0.10. Latest report:
+[`FAIRNESS_AUDIT.md`](./FAIRNESS_AUDIT.md). The audit reports, it does
+not gate; CI enforcement is a separate follow-up.
+
 ## Production access
 
 The `nil-predictor` HTTP service is not internet-facing on its own.
