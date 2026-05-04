@@ -6,20 +6,31 @@ Run:
     uvicorn nil_predictor.api:app --host 0.0.0.0 --port 8000
 
 Endpoints:
-    GET  /health              -> {"ok": true, "models": [...]}
-    GET  /schema              -> required feature columns
-    GET  /explain?top_k=15    -> per-target feature importances
-    POST /predict             -> single athlete or batch (array / {athletes: [...]})
-    POST /checkout            -> create a Stripe Checkout Session
-    POST /webhooks/stripe     -> Stripe webhook receiver
+    GET  /health              -> {"ok": true, "models": [...]}     (always public)
+    GET  /schema              -> required feature columns           (gated if NIL_API_KEY set)
+    GET  /explain?top_k=15    -> per-target feature importances     (gated if NIL_API_KEY set)
+    POST /predict             -> single athlete or batch            (gated if NIL_API_KEY set)
+    POST /checkout            -> create Stripe Checkout Session     (gated if NIL_API_KEY set)
+    POST /webhooks/stripe     -> Stripe webhook receiver            (always public; signature-verified)
+
+Authentication:
+    If the NIL_API_KEY env var is set, every endpoint except /health
+    and /webhooks/stripe requires an `X-API-Key: <key>` header that
+    matches it. Comparison is constant-time (secrets.compare_digest)
+    to avoid timing attacks. If NIL_API_KEY is unset or empty, the
+    service is open — useful for local development; set NIL_API_KEY
+    in production. The Stripe webhook authenticates via Stripe's own
+    signature header, not the API key.
 """
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import audit, payments
@@ -28,17 +39,27 @@ from .models import TARGETS
 from .predict import predict as _predict
 from .explain import per_target_importances
 
+# Hard cap on records per request — prevents single-request DoS via giant batches.
+MAX_BATCH = max(1, int(os.environ.get("NIL_MAX_BATCH", "100")))
+
+# Optional API key gate. Empty / unset = open. Always set in production.
+NIL_API_KEY = os.environ.get("NIL_API_KEY", "").strip()
+
+# Endpoints that bypass the key gate. /health is for Fly/k8s probes; the
+# Stripe webhook authenticates via stripe-signature, not X-API-Key.
+PUBLIC_PATHS = frozenset({"/health", "/webhooks/stripe"})
+
 
 class Athlete(BaseModel):
-    sport: str
-    position: str
-    conference: str
-    year: str
+    sport: str = Field(max_length=64)
+    position: str = Field(max_length=64)
+    conference: str = Field(max_length=64)
+    year: str = Field(max_length=8)
     starter: bool
     performance_score: float = Field(ge=0, le=100)
-    instagram_followers: int = Field(ge=0)
-    tiktok_followers: int = Field(ge=0)
-    twitter_followers: int = Field(ge=0)
+    instagram_followers: int = Field(ge=0, le=10**9)
+    tiktok_followers: int = Field(ge=0, le=10**9)
+    twitter_followers: int = Field(ge=0, le=10**9)
 
 
 class PredictRequest(BaseModel):
@@ -50,8 +71,19 @@ def _artifacts_dir() -> Path:
     return Path(raw).resolve()
 
 
-app = FastAPI(title="nil-predictor", version="0.1.0")
+app = FastAPI(title="nil-predictor", version="0.1.3")
 app.include_router(payments.router)
+
+
+@app.middleware("http")
+async def api_key_gate(request: Request, call_next):
+    if NIL_API_KEY and request.url.path not in PUBLIC_PATHS:
+        provided = request.headers.get("x-api-key", "")
+        # constant-time compare; secrets.compare_digest requires same-length strs
+        # so we hash both sides via fixed-width comparison.
+        if not provided or not secrets.compare_digest(provided, NIL_API_KEY):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 @app.get("/health")
@@ -67,6 +99,8 @@ def health() -> dict[str, Any]:
         "artifacts_dir": str(art),
         "models_present": present,
         "models_missing": missing,
+        "max_batch": MAX_BATCH,
+        "auth_required": bool(NIL_API_KEY),
     }
 
 
@@ -75,11 +109,13 @@ def schema() -> dict[str, Any]:
     return {
         "required_fields": FEATURE_COLUMNS,
         "targets": [t.name for t in TARGETS],
+        "max_batch": MAX_BATCH,
     }
 
 
 @app.get("/explain")
 def explain(top_k: int = 15) -> dict[str, Any]:
+    top_k = max(1, min(int(top_k), 100))
     art = _artifacts_dir()
     if not art.exists():
         raise HTTPException(status_code=503, detail=f"artifacts dir not found: {art}")
@@ -96,6 +132,12 @@ def predict_one(payload: Athlete | list[Athlete] | PredictRequest) -> dict[str, 
         if not payload.athletes:
             raise HTTPException(status_code=400, detail="athletes array is empty")
         records = [a.model_dump() for a in payload.athletes]
+
+    if len(records) > MAX_BATCH:
+        raise HTTPException(
+            status_code=413,
+            detail=f"batch size {len(records)} exceeds limit {MAX_BATCH}",
+        )
 
     art = _artifacts_dir()
     request_id = audit.emit(
