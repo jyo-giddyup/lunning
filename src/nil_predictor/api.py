@@ -10,17 +10,19 @@ Endpoints:
     GET  /schema              -> required feature columns           (gated if NIL_API_KEY set)
     GET  /explain?top_k=15    -> per-target feature importances     (gated if NIL_API_KEY set)
     POST /predict             -> single athlete or batch            (gated if NIL_API_KEY set)
-    POST /checkout            -> create Stripe Checkout Session     (gated if NIL_API_KEY set)
+    POST /checkout            -> create Stripe Checkout Session     (always public)
     POST /webhooks/stripe     -> Stripe webhook receiver            (always public; signature-verified)
 
 Authentication:
-    If the NIL_API_KEY env var is set, every endpoint except /health
-    and /webhooks/stripe requires an `X-API-Key: <key>` header that
-    matches it. Comparison is constant-time (secrets.compare_digest)
-    to avoid timing attacks. If NIL_API_KEY is unset or empty, the
-    service is open — useful for local development; set NIL_API_KEY
-    in production. The Stripe webhook authenticates via Stripe's own
-    signature header, not the API key.
+    If the NIL_API_KEY env var is set, every endpoint except /health,
+    /checkout, and /webhooks/stripe requires an `X-API-Key: <key>`
+    header that matches it. Comparison is constant-time
+    (secrets.compare_digest) to avoid timing attacks. If NIL_API_KEY
+    is unset or empty, the service is open — useful for local
+    development; set NIL_API_KEY in production. /checkout is the
+    purchase entry point so it stays open (otherwise customers would
+    need an API key to buy the API key); /webhooks/stripe authenticates
+    via Stripe's own signature header.
 """
 from __future__ import annotations
 
@@ -45,9 +47,11 @@ MAX_BATCH = max(1, int(os.environ.get("NIL_MAX_BATCH", "100")))
 # Optional API key gate. Empty / unset = open. Always set in production.
 NIL_API_KEY = os.environ.get("NIL_API_KEY", "").strip()
 
-# Endpoints that bypass the key gate. /health is for Fly/k8s probes; the
-# Stripe webhook authenticates via stripe-signature, not X-API-Key.
-PUBLIC_PATHS = frozenset({"/health", "/webhooks/stripe"})
+# Endpoints that bypass the key gate. /health is for Fly/k8s probes;
+# /webhooks/stripe authenticates via stripe-signature, not X-API-Key;
+# /checkout is the purchase entry point — gating it would require an API
+# key in order to buy the API key.
+PUBLIC_PATHS = frozenset({"/health", "/webhooks/stripe", "/checkout"})
 
 
 class Athlete(BaseModel):
