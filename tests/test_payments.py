@@ -13,10 +13,9 @@ import sys
 import types
 
 import pytest
-
-fastapi = pytest.importorskip("fastapi")
-httpx = pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
+
+from nil_predictor import api as api_module
 
 
 def _install_stripe_stub(monkeypatch, *, session=None, raise_on_create=None,
@@ -69,13 +68,11 @@ def _install_stripe_stub(monkeypatch, *, session=None, raise_on_create=None,
 def app_client(tmp_path, monkeypatch):
     monkeypatch.setenv("NIL_ARTIFACTS_DIR", str(tmp_path))
     monkeypatch.setenv("NIL_AUDIT_LOG", str(tmp_path / "audit.log"))
-    monkeypatch.delenv("NIL_API_KEY", raising=False)
-    # Force a fresh import so the router picks up the patched env.
-    for mod in list(sys.modules):
-        if mod.startswith("nil_predictor"):
-            sys.modules.pop(mod)
-    from nil_predictor.api import app
-    return TestClient(app)
+    # Force the auth gate dormant for every payments test, regardless of
+    # what other tests might have left in os.environ. monkeypatch.setattr
+    # on the module attribute auto-restores at teardown.
+    monkeypatch.setattr(api_module, "NIL_API_KEY", "")
+    return TestClient(api_module.app)
 
 
 def test_checkout_missing_secret_key_returns_503(app_client, monkeypatch):
@@ -151,7 +148,7 @@ def test_webhook_invalid_signature_returns_400(app_client, monkeypatch):
     assert "signature" in r.json()["detail"]
 
 
-def test_webhook_checkout_completed_is_acknowledged(app_client, monkeypatch, tmp_path):
+def test_webhook_checkout_completed_is_acknowledged(app_client, monkeypatch):
     event = {
         "id": "evt_42",
         "type": "checkout.session.completed",
