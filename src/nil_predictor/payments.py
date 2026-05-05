@@ -30,6 +30,28 @@ from . import audit
 
 router = APIRouter()
 
+# Hard cap on webhook body size. Stripe webhooks top out around 256KB; 1 MB
+# is an order of magnitude of headroom while still bounding allocation (L2).
+MAX_WEBHOOK_BYTES = 1_048_576
+
+# How many recent audit entries to scan for duplicate webhook event IDs (M1).
+# Stripe retries failed webhooks for up to 3 days; 200 entries covers the
+# typical replay window for a low-volume service. If volume grows, switch
+# to an indexed dedup store.
+WEBHOOK_DEDUP_WINDOW = 200
+
+
+def _event_already_processed(event_id: str | None) -> bool:
+    """True if a `stripe.webhook` audit record with the same event_id exists."""
+    if not event_id:
+        return False
+    for record in audit.tail(WEBHOOK_DEDUP_WINDOW):
+        if record.get("event") != "stripe.webhook":
+            continue
+        if record.get("payload_meta", {}).get("event_id") == event_id:
+            return True
+    return False
+
 
 class CheckoutRequest(BaseModel):
     customer_email: str | None = None
@@ -84,12 +106,21 @@ def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
             metadata={"request_id": request_id},
         )
     except Exception as e:
+        # Audit the full error server-side; respond with a generic message
+        # plus the request_id so operators can correlate without leaking
+        # Stripe internals to the public client (L1).
         audit.emit(
             "checkout.error",
-            payload={"error": type(e).__name__},
+            payload={
+                "error_kind": type(e).__name__,
+                "error_detail": str(e),
+            },
             request_id=request_id,
         )
-        raise HTTPException(status_code=502, detail=f"stripe error: {e}") from e
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "checkout_failed", "request_id": request_id},
+        ) from e
 
     audit.emit(
         "checkout.created",
@@ -110,7 +141,22 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
     sig = request.headers.get("stripe-signature")
     if not sig:
         raise HTTPException(status_code=400, detail="missing stripe-signature header")
-    body = await request.body()
+
+    # Bound body size before allocation (L2). Trust Content-Length when given
+    # but also stop reading mid-stream if a client lies about it.
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_WEBHOOK_BYTES:
+                raise HTTPException(status_code=413, detail="payload too large")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="invalid Content-Length") from e
+
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_WEBHOOK_BYTES:
+            raise HTTPException(status_code=413, detail="payload too large")
 
     try:
         event = stripe.Webhook.construct_event(body, sig, secret)
@@ -119,10 +165,16 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
     except stripe.error.SignatureVerificationError as e:
         raise HTTPException(status_code=400, detail="invalid signature") from e
 
+    # Idempotency: Stripe retries on 5xx/timeouts for up to 3 days. If we've
+    # already audited this event_id, return success without re-processing (M1).
+    event_id = event.get("id")
+    if _event_already_processed(event_id):
+        return {"received": True, "duplicate": True}
+
     event_type = event.get("type", "")
     request_id = audit.emit(
         "stripe.webhook",
-        payload={"event_type": event_type, "event_id": event.get("id")},
+        payload={"event_type": event_type, "event_id": event_id},
     )["request_id"]
 
     if event_type == "checkout.session.completed":
