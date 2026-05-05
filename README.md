@@ -98,6 +98,30 @@ echo '{
 pytest -q
 ```
 
+## Pro stage (sibling submodule)
+
+A separate package `nil_predictor.pro` predicts post-college outcomes
+for **drafted** athletes only — first pro contract value, career
+length, all-star probability, and agent signing. It has its own
+[`MODEL_CARD_PRO.md`](./MODEL_CARD_PRO.md), data generator, training
+CLI, and `artifacts/pro/` directory per the stage-separation rule
+codified in `lunning-/CLAUDE.md`.
+
+```bash
+python -m nil_predictor.pro.train --n 30000 --out artifacts/pro/
+echo '{...athlete with draft_round, draft_pick, combine_score...}' \
+  | python -m nil_predictor.pro.predict --artifacts artifacts/pro/
+```
+
+To run amateur + pro as a single chained prediction:
+
+```python
+from nil_predictor.pro.chain import predict
+out = predict([athlete], amateur_artifacts="artifacts",
+              pro_artifacts="artifacts/pro", pro_threshold=0.5)
+# out[i]["amateur"] always set; out[i]["pro"] only if drafted_proba.True >= threshold
+```
+
 ## Fairness audit
 
 A one-shot fairness audit on the trained binary classifiers (`portal`,
