@@ -72,6 +72,9 @@ def app_client(tmp_path, monkeypatch):
     # what other tests might have left in os.environ. monkeypatch.setattr
     # on the module attribute auto-restores at teardown.
     monkeypatch.setattr(api_module, "NIL_API_KEY", "")
+    # Reset the in-memory rate-limit buckets so tests don't bleed into
+    # each other's quotas.
+    api_module._checkout_buckets.clear()
     return TestClient(api_module.app)
 
 
@@ -106,7 +109,11 @@ def test_checkout_success_returns_session_url(app_client, monkeypatch):
     assert body["request_id"]
 
 
-def test_checkout_stripe_failure_returns_502(app_client, monkeypatch):
+def test_checkout_stripe_failure_returns_generic_502(app_client, monkeypatch):
+    """L1: Stripe error string must NOT be echoed in the public response.
+    The full exception message is recorded in the audit log under the
+    same request_id so operators can correlate without leaking internals.
+    """
     _install_stripe_stub(monkeypatch, raise_on_create=RuntimeError("boom"))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
     monkeypatch.setenv("STRIPE_PRICE_ID", "price_x")
@@ -114,7 +121,21 @@ def test_checkout_stripe_failure_returns_502(app_client, monkeypatch):
     monkeypatch.setenv("STRIPE_CANCEL_URL", "https://example.com/cancel")
     r = app_client.post("/checkout", json={})
     assert r.status_code == 502
-    assert "boom" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["error"] == "checkout_failed"
+    assert detail["request_id"]
+    assert "boom" not in r.text  # no leak in any part of the response
+
+    # Audit log should record the full error under the same request_id.
+    from nil_predictor import audit
+    matches = [
+        rec for rec in audit.tail(20)
+        if rec["event"] == "checkout.error"
+        and rec["request_id"] == detail["request_id"]
+    ]
+    assert matches, "checkout.error not found in audit log"
+    assert matches[-1]["payload_meta"]["error_detail"] == "boom"
+    assert matches[-1]["payload_meta"]["error_kind"] == "RuntimeError"
 
 
 def test_webhook_missing_signature_returns_400(app_client, monkeypatch):
@@ -174,3 +195,98 @@ def test_webhook_checkout_completed_is_acknowledged(app_client, monkeypatch):
     events = [e["event"] for e in audit.tail(10)]
     assert "stripe.webhook" in events
     assert "stripe.checkout_completed" in events
+
+
+def test_webhook_replay_is_idempotent(app_client, monkeypatch):
+    """M1: Stripe retries deliver the same event_id; second hit must not
+    re-process or re-audit."""
+    event = {
+        "id": "evt_replay_1",
+        "type": "checkout.session.completed",
+        "data": {"object": {"id": "cs_replay_1", "amount_total": 1000}},
+    }
+    _install_stripe_stub(monkeypatch, construct_event=lambda b, s, k: event)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_x")
+
+    first = app_client.post(
+        "/webhooks/stripe", content=b"{}",
+        headers={"stripe-signature": "t=1,v1=ok"},
+    )
+    assert first.status_code == 200
+    assert first.json() == {"received": True}
+
+    second = app_client.post(
+        "/webhooks/stripe", content=b"{}",
+        headers={"stripe-signature": "t=1,v1=ok"},
+    )
+    assert second.status_code == 200
+    assert second.json() == {"received": True, "duplicate": True}
+
+    # Audit log must contain stripe.webhook for evt_replay_1 exactly once.
+    from nil_predictor import audit
+    webhook_records = [
+        r for r in audit.tail(50)
+        if r["event"] == "stripe.webhook"
+        and r["payload_meta"].get("event_id") == "evt_replay_1"
+    ]
+    assert len(webhook_records) == 1
+
+
+def test_webhook_invalid_payload_returns_400(app_client, monkeypatch):
+    """T3: signature header valid but construct_event raises ValueError
+    (e.g. malformed JSON body)."""
+    stripe_mod = _install_stripe_stub(monkeypatch)
+
+    def bad_payload(body, sig, secret):
+        raise ValueError("not json")
+
+    stripe_mod.Webhook.construct_event = staticmethod(bad_payload)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_x")
+
+    r = app_client.post(
+        "/webhooks/stripe",
+        content=b"not really json",
+        headers={"stripe-signature": "t=1,v1=ok"},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"] == "invalid payload"
+
+
+def test_webhook_oversize_body_returns_413(app_client, monkeypatch):
+    """L2: bound webhook body size to prevent unbounded allocation."""
+    _install_stripe_stub(monkeypatch)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_x")
+
+    # 2 MB > MAX_WEBHOOK_BYTES (1 MB)
+    big_body = b"x" * (2 * 1024 * 1024)
+    r = app_client.post(
+        "/webhooks/stripe",
+        content=big_body,
+        headers={"stripe-signature": "t=1,v1=ok"},
+    )
+    assert r.status_code == 413
+    assert "too large" in r.json()["detail"]
+
+
+def test_checkout_rate_limit(app_client, monkeypatch):
+    """M2: /checkout enforces a per-IP sliding-window cap."""
+    _install_stripe_stub(monkeypatch)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setenv("STRIPE_PRICE_ID", "price_x")
+    monkeypatch.setenv("STRIPE_SUCCESS_URL", "https://example.com/ok")
+    monkeypatch.setenv("STRIPE_CANCEL_URL", "https://example.com/cancel")
+
+    # Drop the limit to a small number so the test is fast.
+    monkeypatch.setattr(api_module, "CHECKOUT_RATE_LIMIT", 3)
+
+    for _ in range(3):
+        r = app_client.post("/checkout", json={})
+        assert r.status_code == 200, r.text
+
+    blocked = app_client.post("/checkout", json={})
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == "rate_limited"
+    assert int(blocked.headers["retry-after"]) >= 1

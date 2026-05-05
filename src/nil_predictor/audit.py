@@ -60,7 +60,8 @@ SAFE_FIELDS = {
     "out_dir", "duration_ms", "exit_code", "error_kind",
     "artifacts_dir", "model_count", "violation_count",
     "event_type", "event_id", "session_id", "price_id",
-    "quantity", "client_reference_id", "amount_total", "error",
+    "quantity", "client_reference_id", "amount_total",
+    "error_detail",
 }
 
 
