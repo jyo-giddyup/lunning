@@ -106,7 +106,7 @@ def test_checkout_success_returns_session_url(app_client, monkeypatch):
     assert body["request_id"]
 
 
-def test_checkout_stripe_failure_returns_502_and_redacts_detail(app_client, monkeypatch):
+def test_checkout_stripe_failure_returns_502(app_client, monkeypatch):
     _install_stripe_stub(monkeypatch, raise_on_create=RuntimeError("boom"))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
     monkeypatch.setenv("STRIPE_PRICE_ID", "price_x")
@@ -116,10 +116,9 @@ def test_checkout_stripe_failure_returns_502_and_redacts_detail(app_client, monk
     assert r.status_code == 502
     # Detail is intentionally generic — Stripe error bodies can include
     # card-issuer messages and customer identifiers, so we don't leak
-    # them in the HTTP response (see payments.py "checkout.error" emit).
+    # them in the HTTP response. The exception type is captured in the
+    # audit chain via the "checkout.error" event below.
     assert r.json()["detail"] == "payment provider error"
-    # The exception type IS captured in the audit chain so operators can
-    # still triage failures without the response leaking PII.
     from nil_predictor import audit
     errs = [e for e in audit.tail(20) if e["event"] == "checkout.error"]
     assert errs, "expected a checkout.error audit event"
