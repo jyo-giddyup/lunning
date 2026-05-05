@@ -55,7 +55,7 @@ Holdout n=10,000, seed=7, 80/20 split:
 
 | Risk                                   | Severity | Mitigation                                |
 | -------------------------------------- | -------- | ----------------------------------------- |
-| Sport-segregated outcomes (M vs W)     | Medium   | Track per-sport metrics in CI (TODO)      |
+| Sport-segregated outcomes (M vs W)     | Medium   | Per-sport gaps tracked in fairness.json   |
 | Conference proxy for school resources  | Medium   | Document in feature glossary              |
 | Synthetic → real distribution shift    | High     | Block prod deploy until real-data eval    |
 | Probability miscalibration on real data| Medium   | Recalibrate via CalibratedClassifierCV    |
@@ -68,6 +68,10 @@ Groups are derived from the existing features:
 - `conference_tier`: P5 (SEC, Big Ten, Big 12, ACC, Pac-12) vs G5
   (Big East, AAC, MWC) vs subdivision (FCS, D2)
 - `gender_proxy`: men's vs women's sport partitions
+- `sport`: individual sport — per-sport gaps are computed and
+  surfaced in `fairness.json` for review, but are not yet enforced as
+  CI gates (synthetic data produces large by-design per-sport gaps;
+  thresholds will be tightened with real data).
 
 | Check                                              | Threshold |
 | -------------------------------------------------- | --------- |
@@ -85,11 +89,18 @@ implementation: `nil_predictor.fairness`.
 ## Governance — ISO/IEC 42001:2023 + 27001:2022
 
 - **License / ownership:** internal only at this time.
-- **Audit trail:** append-only JSONL at `<artifacts>/audit.log`
-  (override via `NIL_AUDIT_LOG`). Events: `train.start`,
-  `train.complete`, `predict.request`, `predict.response`,
-  `predict.error`. Logs payload digests, never raw inputs — no PII
-  even when real data replaces the synthetic generator.
+- **Audit trail:** append-only, **hash-chained** JSONL at
+  `<artifacts>/audit.log` (override via `NIL_AUDIT_LOG`). Each record
+  carries the SHA-256 of the prior record's serialised line — any
+  retroactive edit invalidates every subsequent hash (tamper-evidence).
+  Events: `train.start`, `train.complete`, `predict.request`,
+  `predict.response`, `predict.error`. Logs payload digests, never raw
+  inputs — no PII even when real data replaces the synthetic
+  generator. Chain integrity verified in CI via
+  `nil_predictor.audit.verify`. The emitter is **fail-closed**: an
+  `OSError` on append propagates so a request that cannot be audited
+  is not served (mirrors JYSN L12 in `lunning-`). Set
+  `NIL_AUDIT_FAIL_OPEN=1` to revert to fail-open for local fixtures.
 - **DPIA:** N/A (synthetic data); required before any real-personal-
   data ingestion (ISO/IEC 27701:2019).
 

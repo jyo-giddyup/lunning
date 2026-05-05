@@ -22,9 +22,14 @@ lives in `jyo-giddyup/lunning-` on the `claude/fair-efficient-models-g9gC3`
 branch.
 
 > **Status of this package against the baseline:** the synthetic data is
-> non-personal so DPIA is N/A; intended use + limitations are documented
-> in `MODEL_CARD.md`; fairness gates and full audit-log integration are
-> tracked as follow-up work.
+> non-personal so DPIA is N/A (ISO/IEC 27701:2019); intended use +
+> limitations are documented in `MODEL_CARD.md` (ISO/IEC TR 24028:2020);
+> fairness gates run on every CI build and fail the build on threshold
+> violation (`fairness_check`, ISO/IEC TR 24027:2021); the audit log is
+> hash-chained, append-only, and fail-closed, with chain integrity
+> verified in CI (`audit.verify`, ISO/IEC 27001:2022 / 42001:2023);
+> stage-separation across modeling stages is enforced by a CI
+> path-filter (`stage_separation` job, see `CLAUDE.md`).
 
 ## nil-predictor
 

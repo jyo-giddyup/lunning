@@ -114,7 +114,15 @@ def test_checkout_stripe_failure_returns_502(app_client, monkeypatch):
     monkeypatch.setenv("STRIPE_CANCEL_URL", "https://example.com/cancel")
     r = app_client.post("/checkout", json={})
     assert r.status_code == 502
-    assert "boom" in r.json()["detail"]
+    # Detail is intentionally generic — Stripe error bodies can include
+    # card-issuer messages and customer identifiers, so we don't leak
+    # them in the HTTP response. The exception type is captured in the
+    # audit chain via the "checkout.error" event below.
+    assert r.json()["detail"] == "payment provider error"
+    from nil_predictor import audit
+    errs = [e for e in audit.tail(20) if e["event"] == "checkout.error"]
+    assert errs, "expected a checkout.error audit event"
+    assert errs[-1]["payload_meta"].get("error") == "RuntimeError"
 
 
 def test_webhook_missing_signature_returns_400(app_client, monkeypatch):

@@ -64,3 +64,26 @@ def test_evaluate_full_pipeline_passes_when_under_thresholds():
     rep = evaluate(df, thresholds=DEFAULT_THRESHOLDS)
     assert rep.passed, rep.violations
     assert rep.metrics  # something was computed
+
+
+def test_evaluate_emits_per_sport_metrics():
+    rng_n = 200
+    df = pd.DataFrame({
+        "sport": ["football"] * rng_n + ["mens_basketball"] * rng_n,
+        "conference": (["SEC"] * 100 + ["MWC"] * 100) * 2,
+        "drafted": [True] * (rng_n * 2),
+        "drafted_pred": [True, False] * (rng_n),
+        "portal_pred": [False] * (rng_n * 2),
+        "tier_pred": ["high"] * (rng_n * 2),
+        "valuation_pred": [10000.0] * (rng_n * 2),
+        "valuation_label": [10000.0] * (rng_n * 2),
+    })
+    rep = evaluate(df, thresholds=DEFAULT_THRESHOLDS)
+    sport_metrics = [m for m in rep.metrics if m.get("group") == "sport"]
+    # per-sport: drafted DP, drafted EO, portal DP, top-tier DP, valuation regression
+    assert len(sport_metrics) == 5
+    for m in sport_metrics:
+        bucket = m.get("rates") or m.get("tpr") or m.get("mean_bias") or {}
+        assert {"football", "mens_basketball"}.issubset(bucket.keys())
+    # Per-sport metrics are tracked-only — no thresholds, so report still passes.
+    assert rep.passed, rep.violations
