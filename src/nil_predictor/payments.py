@@ -32,9 +32,18 @@ router = APIRouter()
 
 
 class CheckoutRequest(BaseModel):
-    customer_email: str | None = None
+    customer_email: str | None = Field(default=None, max_length=320)
     quantity: int = Field(default=1, ge=1, le=1000)
-    client_reference_id: str | None = None
+    client_reference_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Operational identifier passed through to Stripe and recorded "
+            "in the hash-chained audit log. MUST NOT contain PII (email, "
+            "name, etc.) — use a UUID or an internal customer ID. The "
+            "audit emitter does not redact this field."
+        ),
+    )
 
 
 def _stripe():
@@ -84,12 +93,15 @@ def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
             metadata={"request_id": request_id},
         )
     except Exception as e:
+        # Audit captures the exception type; HTTP response stays generic so
+        # we don't leak Stripe error bodies (which can include card-issuer
+        # messages, customer identifiers, etc.) to the client.
         audit.emit(
             "checkout.error",
             payload={"error": type(e).__name__},
             request_id=request_id,
         )
-        raise HTTPException(status_code=502, detail=f"stripe error: {e}") from e
+        raise HTTPException(status_code=502, detail="payment provider error") from e
 
     audit.emit(
         "checkout.created",
