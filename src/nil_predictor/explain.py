@@ -138,3 +138,52 @@ def per_target_importances(artifacts_dir: str | Path, top_k: int = 15) -> dict[s
             ],
         }
     return out
+
+
+def raw_feature_importances(
+    artifacts_dir: str | Path,
+    top_k: int = 9,
+    n: int = 1500,
+    seed: int = 4242,
+    n_repeats: int = 5,
+) -> dict[str, Any]:
+    """Per-RAW-feature permutation importance for *every* target.
+
+    Complement to `per_target_importances`: the latter returns per-OHE
+    importances when the estimator exposes `feature_importances_`, which is
+    fine-grained but mixes structural variants (e.g. `sport_football` vs
+    `position_QB`) that aren't user-actionable in isolation. This function
+    always reports per-raw-feature granularity (9 columns), so a consumer
+    can answer \"which input has the most leverage on this target?\"
+    regardless of the estimator's introspection surface.
+
+    Defaults match the per-target permutation fallback (seed 4242, the
+    calibration set held out from training and audit seeds).
+    """
+    art = Path(artifacts_dir)
+    out: dict[str, Any] = {}
+    for spec in TARGETS:
+        path = art / f"{spec.name}.joblib"
+        if not path.exists():
+            continue
+        pipeline = joblib.load(path)["model"]
+        try:
+            raw_names, perm = _permutation_importances(
+                pipeline, spec.column, n=n, seed=seed, n_repeats=n_repeats,
+            )
+        except Exception as e:
+            out[spec.name] = {
+                "available": False,
+                "reason": f"permutation_importance failed: {e}",
+            }
+            continue
+        order = np.argsort(np.abs(perm))[::-1][:top_k]
+        out[spec.name] = {
+            "available": True,
+            "method": "permutation_importance",
+            "top_features": [
+                {"feature": raw_names[i], "importance": float(round(perm[i], 4))}
+                for i in order
+            ],
+        }
+    return out
