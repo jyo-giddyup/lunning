@@ -4,6 +4,7 @@ Monetization gate for the predictor:
 
     POST /checkout         -> create a Checkout Session, return its URL
     POST /webhooks/stripe  -> verify signature, process subscription events
+    GET  /revenue          -> succeeded-charge totals per currency
 
 Required env vars (set as Fly secrets in production):
     STRIPE_SECRET_KEY      sk_live_... or sk_test_...
@@ -21,6 +22,7 @@ without it installed; missing SDK or env surfaces as HTTP 503.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -139,3 +141,90 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
         )
 
     return {"received": True}
+
+
+# --- Revenue --------------------------------------------------------------
+
+
+def _parse_date(s: str, label: str) -> datetime:
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid `{label}` date {s!r}, expected YYYY-MM-DD",
+        ) from e
+
+
+def _parse_window(since: str | None, until: str | None) -> tuple[int, int]:
+    """Parse YYYY-MM-DD into UTC unix timestamps; defaults to last 30 days."""
+    today = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    until_dt = (today + timedelta(days=1)) if until is None else _parse_date(until, "until")
+    since_dt = (today - timedelta(days=30)) if since is None else _parse_date(since, "since")
+    if since_dt >= until_dt:
+        raise HTTPException(status_code=400, detail="`since` must be before `until`")
+    return int(since_dt.timestamp()), int(until_dt.timestamp())
+
+
+@router.get("/revenue")
+def revenue(since: str | None = None, until: str | None = None) -> dict[str, Any]:
+    """Succeeded-charge totals per currency in a date window.
+
+    Defaults to the last 30 days (UTC). Amounts are returned in
+    Stripe's smallest unit per currency (cents for USD, yen for JPY,
+    etc.) so callers format correctly without a zero-decimal-currency
+    table. Net = gross - refunds; processing fees are not subtracted
+    (those live on BalanceTransaction, not Charge).
+    """
+    stripe = _stripe()
+    since_ts, until_ts = _parse_window(since, until)
+
+    request_id = audit.emit(
+        "revenue.request",
+        payload={"since": since_ts, "until": until_ts},
+    )["request_id"]
+
+    by_currency: dict[str, dict[str, int]] = {}
+    total = 0
+    try:
+        page = stripe.Charge.list(
+            created={"gte": since_ts, "lt": until_ts},
+            limit=100,
+        )
+        for charge in page.auto_paging_iter():
+            if charge.get("status") != "succeeded":
+                continue
+            cur = (charge.get("currency") or "").lower()
+            bucket = by_currency.setdefault(
+                cur, {"gross_minor": 0, "net_minor": 0, "count": 0}
+            )
+            amount = int(charge.get("amount") or 0)
+            refunded = int(charge.get("amount_refunded") or 0)
+            bucket["gross_minor"] += amount
+            bucket["net_minor"] += amount - refunded
+            bucket["count"] += 1
+            total += 1
+    except HTTPException:
+        raise
+    except Exception as e:
+        audit.emit(
+            "revenue.error",
+            payload={"error": type(e).__name__},
+            request_id=request_id,
+        )
+        raise HTTPException(status_code=502, detail=f"stripe error: {e}") from e
+
+    audit.emit(
+        "revenue.response",
+        payload={"currencies": sorted(by_currency), "n_charges": total},
+        request_id=request_id,
+    )
+    return {
+        "since": since_ts,
+        "until": until_ts,
+        "currencies": by_currency,
+        "total_charges": total,
+        "request_id": request_id,
+    }
