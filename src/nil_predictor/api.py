@@ -26,8 +26,11 @@ Authentication:
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +55,13 @@ NIL_API_KEY = os.environ.get("NIL_API_KEY", "").strip()
 # /checkout is the purchase entry point — gating it would require an API
 # key in order to buy the API key.
 PUBLIC_PATHS = frozenset({"/health", "/webhooks/stripe", "/checkout"})
+
+# In-memory sliding-window rate limit on /checkout (M2 from the security
+# review). Per-instance only — if the predictor is ever horizontally
+# scaled, replace with a Redis-backed counter so all instances share state.
+CHECKOUT_RATE_LIMIT = int(os.environ.get("NIL_CHECKOUT_RATE_LIMIT", "10"))
+CHECKOUT_RATE_WINDOW = float(os.environ.get("NIL_CHECKOUT_RATE_WINDOW", "60"))
+_checkout_buckets: dict[str, deque[float]] = defaultdict(deque)
 
 
 class Athlete(BaseModel):
@@ -79,13 +89,44 @@ app = FastAPI(title="nil-predictor", version="0.1.3")
 app.include_router(payments.router)
 
 
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def checkout_rate_limit(request: Request, call_next):
+    if request.url.path == "/checkout" and request.method == "POST":
+        ip = _client_ip(request)
+        now = time.monotonic()
+        bucket = _checkout_buckets[ip]
+        cutoff = now - CHECKOUT_RATE_WINDOW
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= CHECKOUT_RATE_LIMIT:
+            retry_after = max(1, int(CHECKOUT_RATE_WINDOW - (now - bucket[0])) + 1)
+            return JSONResponse(
+                {"detail": "rate_limited"},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        bucket.append(now)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def api_key_gate(request: Request, call_next):
     if NIL_API_KEY and request.url.path not in PUBLIC_PATHS:
         provided = request.headers.get("x-api-key", "")
-        # constant-time compare; secrets.compare_digest requires same-length strs
-        # so we hash both sides via fixed-width comparison.
-        if not provided or not secrets.compare_digest(provided, NIL_API_KEY):
+        # Hash both sides to fixed length so compare_digest runs in constant
+        # time regardless of whether `provided` is empty or wrong-length.
+        # The earlier `not provided`-short-circuit leaked "header missing"
+        # versus "header wrong" via response timing (L6).
+        provided_hash = hashlib.sha256(provided.encode()).digest()
+        expected_hash = hashlib.sha256(NIL_API_KEY.encode()).digest()
+        if not secrets.compare_digest(provided_hash, expected_hash):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
