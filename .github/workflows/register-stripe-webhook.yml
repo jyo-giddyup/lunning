@@ -1,0 +1,84 @@
+name: register-stripe-webhook
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Webhook endpoint URL"
+        required: false
+        default: "https://nil-predictor.fly.dev/webhooks/stripe"
+      events:
+        description: "Comma-separated Stripe event types"
+        required: false
+        default: "checkout.session.completed"
+
+concurrency:
+  group: register-stripe-webhook
+  cancel-in-progress: false
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Register Stripe webhook
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          URL: ${{ inputs.url }}
+          EVENTS: ${{ inputs.events }}
+        run: |
+          set -e
+          for v in STRIPE_SECRET_KEY FLY_API_TOKEN; do
+            [ -n "${!v}" ] || { echo "::error::repo secret $v not set"; exit 1; }
+          done
+
+          existing=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints \
+                       -u "$STRIPE_SECRET_KEY:" -G -d limit=100 \
+                     | jq -r --arg url "$URL" '.data[] | select(.url==$url) | .id')
+
+          if [ -n "$existing" ]; then
+            {
+              echo "### Webhook already registered"
+              echo "- id: \`$existing\`"
+              echo "- url: $URL"
+              echo
+              echo "To rotate the signing secret: delete the endpoint in Stripe and re-run this workflow."
+            } >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          events_args=()
+          IFS=',' read -ra arr <<< "$EVENTS"
+          for e in "${arr[@]}"; do events_args+=("-d" "enabled_events[]=$e"); done
+
+          resp=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints \
+                   -u "$STRIPE_SECRET_KEY:" \
+                   -d "url=$URL" \
+                   -d "description=NIL predictor (auto-registered via GH Actions)" \
+                   "${events_args[@]}")
+          id=$(echo "$resp"     | jq -r '.id')
+          secret=$(echo "$resp" | jq -r '.secret')
+
+          if [ -z "$secret" ] || [ "$secret" = "null" ]; then
+            echo "::error::Stripe response missing .secret"
+            echo "$resp"
+            exit 1
+          fi
+
+          # Push to Fly. flyctl reads the value from the argv; logs only show the
+          # var name, not the value.
+          flyctl secrets set "STRIPE_WEBHOOK_SECRET=$secret" --app nil-predictor
+
+          {
+            echo "### Webhook registered"
+            echo "- id: \`$id\`"
+            echo "- url: $URL"
+            echo "- events: \`$EVENTS\`"
+            echo "- secret written to Fly app \`nil-predictor\` as \`STRIPE_WEBHOOK_SECRET\`"
+            echo
+            echo "If you also need the secret as a GitHub repo secret (for re-running"
+            echo "\`set-stripe-secrets\`), reveal it once in the Stripe Dashboard:"
+            echo "Developers → Webhooks → endpoint → \"Reveal signing secret\"."
+          } >> $GITHUB_STEP_SUMMARY
