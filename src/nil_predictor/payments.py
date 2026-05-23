@@ -1,10 +1,12 @@
-"""Stripe Checkout + webhook endpoints.
+"""Stripe Checkout + webhook endpoints + customer-facing reads.
 
 Monetization gate for the predictor:
 
-    POST /checkout         -> create a Checkout Session, return its URL
-    POST /webhooks/stripe  -> verify signature, process subscription events
-    GET  /revenue          -> succeeded-charge totals per currency
+    POST /checkout                 -> create a Checkout Session, return its URL
+    POST /webhooks/stripe          -> verify signature, process subscription events
+    GET  /customer/bootstrap       -> one-shot API-key retrieval after checkout
+    GET  /me                       -> the calling customer's record
+    GET  /revenue                  -> succeeded-charge totals per currency
 
 Required env vars (set as Fly secrets in production):
     STRIPE_SECRET_KEY      sk_live_... or sk_test_...
@@ -28,15 +30,15 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import audit
+from . import audit, customers
 
 router = APIRouter()
 
 # Hard cap on webhook body size. Stripe webhooks top out around 256KB; 1 MB
-# is an order of magnitude of headroom while still bounding allocation (L2).
+# is an order of magnitude of headroom while still bounding allocation.
 MAX_WEBHOOK_BYTES = 1_048_576
 
-# How many recent audit entries to scan for duplicate webhook event IDs (M1).
+# How many recent audit entries to scan for duplicate webhook event IDs.
 # Stripe retries failed webhooks for up to 3 days; 200 entries covers the
 # typical replay window for a low-volume service. If volume grows, switch
 # to an indexed dedup store.
@@ -108,9 +110,6 @@ def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
             metadata={"request_id": request_id},
         )
     except Exception as e:
-        # Audit the full error server-side; respond with a generic message
-        # plus the request_id so operators can correlate without leaking
-        # Stripe internals to the public client (L1).
         audit.emit(
             "checkout.error",
             payload={
@@ -144,7 +143,7 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
     if not sig:
         raise HTTPException(status_code=400, detail="missing stripe-signature header")
 
-    # Bound body size before allocation (L2). Trust Content-Length when given
+    # Bound body size before allocation. Trust Content-Length when given
     # but also stop reading mid-stream if a client lies about it.
     content_length = request.headers.get("content-length")
     if content_length:
@@ -168,7 +167,7 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="invalid signature") from e
 
     # Idempotency: Stripe retries on 5xx/timeouts for up to 3 days. If we've
-    # already audited this event_id, return success without re-processing (M1).
+    # already audited this event_id, return success without re-processing.
     event_id = event.get("id")
     if _event_already_processed(event_id):
         return {"received": True, "duplicate": True}
@@ -191,8 +190,108 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
             },
             request_id=request_id,
         )
+        try:
+            rec = customers.create_from_session(session)
+            audit.emit(
+                "stripe.customer_created",
+                payload={
+                    "event_type": event_type,
+                    "session_id": rec["stripe_session_id"],
+                    "subscription_id": rec.get("stripe_subscription_id"),
+                },
+                request_id=request_id,
+            )
+        except Exception as e:
+            # Customer creation failing is bad but we still want to ACK
+            # the webhook so Stripe doesn't retry forever. The audit
+            # entry plus the alert from missing stripe.customer_created
+            # is enough signal for an operator to investigate.
+            audit.emit(
+                "stripe.customer_create_error",
+                payload={
+                    "event_type": event_type,
+                    "error_kind": type(e).__name__,
+                    "error_detail": str(e),
+                },
+                request_id=request_id,
+            )
+
+    elif event_type == "customer.subscription.updated":
+        sub = event["data"]["object"]
+        status = sub.get("status", "")
+        customers.update_status_by_subscription(sub.get("id", ""), status)
+        audit.emit(
+            "stripe.subscription_updated",
+            payload={
+                "event_type": event_type,
+                "subscription_id": sub.get("id"),
+                "status": status,
+            },
+            request_id=request_id,
+        )
+
+    elif event_type == "customer.subscription.deleted":
+        sub = event["data"]["object"]
+        customers.update_status_by_subscription(sub.get("id", ""), "canceled")
+        audit.emit(
+            "stripe.subscription_canceled",
+            payload={
+                "event_type": event_type,
+                "subscription_id": sub.get("id"),
+                "status": "canceled",
+            },
+            request_id=request_id,
+        )
 
     return {"received": True}
+
+
+# --- Customer-facing reads -----------------------------------------------
+
+
+@router.get("/customer/bootstrap")
+def customer_bootstrap(session_id: str) -> dict[str, Any]:
+    """One-shot API-key retrieval right after Stripe redirects.
+
+    The consumer's /billing/success page calls this with the
+    `session_id` Stripe substitutes into the redirect URL. Returns
+    the API key once; subsequent calls with the same session_id
+    return 404 — the customer must save the value (or, once we
+    ship welcome-email delivery, recover it from email).
+
+    Authentication is by knowledge of the one-time Stripe session id;
+    the path is in PUBLIC_PATHS so the middleware doesn't gate it.
+    """
+    rec = customers.claim_bootstrap(session_id)
+    if not rec:
+        raise HTTPException(
+            status_code=404,
+            detail="session not found or already claimed",
+        )
+    return {
+        "api_key": rec["api_key"],
+        "email": rec["email"],
+        "status": rec["status"],
+    }
+
+
+@router.get("/me")
+def me(request: Request) -> dict[str, Any]:
+    """Return the calling customer's record.
+
+    Gated by the regular X-API-Key middleware (this is why /me is
+    NOT in PUBLIC_PATHS — we *need* the gate to identify the caller).
+    Useful for the consumer to render "Signed in as ..." or to check
+    that a saved API key is still active.
+    """
+    rec = customers.find_by_api_key(request.headers.get("x-api-key", ""))
+    if not rec:
+        raise HTTPException(status_code=404, detail="no customer for this key")
+    return {
+        "email": rec["email"],
+        "status": rec["status"],
+        "created_at": rec["created_at"],
+    }
 
 
 # --- Revenue --------------------------------------------------------------
@@ -263,7 +362,7 @@ def revenue(since: str | None = None, until: str | None = None) -> dict[str, Any
     except Exception as e:
         audit.emit(
             "revenue.error",
-            payload={"error": type(e).__name__},
+            payload={"error_kind": type(e).__name__},
             request_id=request_id,
         )
         raise HTTPException(status_code=502, detail=f"stripe error: {e}") from e

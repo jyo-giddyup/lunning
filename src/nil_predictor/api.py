@@ -6,23 +6,36 @@ Run:
     uvicorn nil_predictor.api:app --host 0.0.0.0 --port 8000
 
 Endpoints:
-    GET  /health              -> {"ok": true, "models": [...]}     (always public)
-    GET  /schema              -> required feature columns           (gated if NIL_API_KEY set)
-    GET  /explain?top_k=15    -> per-target feature importances     (gated if NIL_API_KEY set)
-    POST /predict             -> single athlete or batch            (gated if NIL_API_KEY set)
-    POST /checkout            -> create Stripe Checkout Session     (always public)
-    POST /webhooks/stripe     -> Stripe webhook receiver            (always public; signature-verified)
+    GET  /health                  -> liveness                       (always public)
+    GET  /schema                  -> required feature columns        (gated)
+    GET  /explain?top_k=15        -> per-target feature importances  (gated)
+    POST /predict                 -> single athlete or batch         (gated)
+    POST /checkout                -> create Stripe Checkout Session  (always public)
+    POST /webhooks/stripe         -> Stripe webhook receiver         (always public)
+    GET  /customer/bootstrap      -> one-shot API-key retrieval      (always public)
+    GET  /me                      -> current customer record         (gated)
+    GET  /revenue                 -> succeeded-charge totals         (gated)
 
 Authentication:
-    If the NIL_API_KEY env var is set, every endpoint except /health,
-    /checkout, and /webhooks/stripe requires an `X-API-Key: <key>`
-    header that matches it. Comparison is constant-time
-    (secrets.compare_digest) to avoid timing attacks. If NIL_API_KEY
-    is unset or empty, the service is open — useful for local
-    development; set NIL_API_KEY in production. /checkout is the
-    purchase entry point so it stays open (otherwise customers would
-    need an API key to buy the API key); /webhooks/stripe authenticates
-    via Stripe's own signature header.
+    Two modes, controlled by NIL_REQUIRE_PAYMENT:
+
+    1) Off (default — legacy / dev): if NIL_API_KEY is set, gated
+       endpoints require an X-API-Key header that matches it. If
+       NIL_API_KEY is unset, gated endpoints are open. Single shared
+       key, no notion of identity.
+
+    2) On: gated endpoints require an X-API-Key header that resolves
+       to either NIL_API_KEY (dev/admin override) or a customer row
+       in the SQLite store with status in {active, trialing}. Per-
+       customer entitlement, populated by the Stripe webhook on
+       checkout.session.completed. Cancelled customers automatically
+       lose access on the next request.
+
+    /checkout always bypasses the gate (otherwise customers couldn't
+    buy the API key) and /webhooks/stripe authenticates via Stripe's
+    own signature, not X-API-Key. /customer/bootstrap is also public
+    because the caller doesn't have the API key yet — it's gated by
+    knowledge of the one-time Stripe session_id instead.
 """
 from __future__ import annotations
 
@@ -38,7 +51,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import audit, payments
+from . import audit, customers, payments
 from .features import FEATURE_COLUMNS
 from .models import TARGETS
 from .predict import predict as _predict
@@ -47,14 +60,27 @@ from .explain import per_target_importances
 # Hard cap on records per request — prevents single-request DoS via giant batches.
 MAX_BATCH = max(1, int(os.environ.get("NIL_MAX_BATCH", "100")))
 
-# Optional API key gate. Empty / unset = open. Always set in production.
+# Optional shared API key. In legacy mode (NIL_REQUIRE_PAYMENT off), this is
+# the single gate. In per-customer mode it stays available as a dev /
+# admin override so operators can still poke /predict without a customer
+# row.
 NIL_API_KEY = os.environ.get("NIL_API_KEY", "").strip()
+
+# Feature flag for per-customer entitlement enforcement. When false the
+# middleware behaves exactly as before, so flipping the new database +
+# webhook handlers into production at merge time is safe.
+NIL_REQUIRE_PAYMENT = os.environ.get("NIL_REQUIRE_PAYMENT", "").lower() in (
+    "1", "true", "yes", "on",
+)
 
 # Endpoints that bypass the key gate. /health is for Fly/k8s probes;
 # /webhooks/stripe authenticates via stripe-signature, not X-API-Key;
-# /checkout is the purchase entry point — gating it would require an API
-# key in order to buy the API key.
-PUBLIC_PATHS = frozenset({"/health", "/webhooks/stripe", "/checkout"})
+# /checkout is the purchase entry point; /customer/bootstrap is the
+# one-shot key-retrieval endpoint right after Stripe redirects the
+# customer back — they don't have the key yet.
+PUBLIC_PATHS = frozenset({
+    "/health", "/webhooks/stripe", "/checkout", "/customer/bootstrap",
+})
 
 # In-memory sliding-window rate limit on /checkout (M2 from the security
 # review). Per-instance only — if the predictor is ever horizontally
@@ -85,7 +111,7 @@ def _artifacts_dir() -> Path:
     return Path(raw).resolve()
 
 
-app = FastAPI(title="nil-predictor", version="0.1.3")
+app = FastAPI(title="nil-predictor", version="0.1.4")
 app.include_router(payments.router)
 
 
@@ -116,17 +142,43 @@ async def checkout_rate_limit(request: Request, call_next):
     return await call_next(request)
 
 
+def _matches_admin_key(provided: str) -> bool:
+    """Constant-time check against NIL_API_KEY, working for empty inputs.
+
+    We hash both sides to fixed length so compare_digest runs in constant
+    time regardless of whether `provided` is empty or wrong-length. The
+    earlier `not provided`-short-circuit leaked "header missing" versus
+    "header wrong" via response timing.
+    """
+    if not NIL_API_KEY:
+        return False
+    provided_hash = hashlib.sha256(provided.encode()).digest()
+    expected_hash = hashlib.sha256(NIL_API_KEY.encode()).digest()
+    return secrets.compare_digest(provided_hash, expected_hash)
+
+
 @app.middleware("http")
 async def api_key_gate(request: Request, call_next):
-    if NIL_API_KEY and request.url.path not in PUBLIC_PATHS:
+    path = request.url.path
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    if NIL_REQUIRE_PAYMENT:
+        # Per-customer mode: accept the admin key OR a known customer key
+        # whose subscription is active.
         provided = request.headers.get("x-api-key", "")
-        # Hash both sides to fixed length so compare_digest runs in constant
-        # time regardless of whether `provided` is empty or wrong-length.
-        # The earlier `not provided`-short-circuit leaked "header missing"
-        # versus "header wrong" via response timing (L6).
-        provided_hash = hashlib.sha256(provided.encode()).digest()
-        expected_hash = hashlib.sha256(NIL_API_KEY.encode()).digest()
-        if not secrets.compare_digest(provided_hash, expected_hash):
+        if not provided:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        if _matches_admin_key(provided):
+            return await call_next(request)
+        rec = customers.find_by_api_key(provided)
+        if rec is None or not customers.is_active(rec):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+    # Legacy single-shared-key mode.
+    if NIL_API_KEY:
+        if not _matches_admin_key(request.headers.get("x-api-key", "")):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -145,7 +197,8 @@ def health() -> dict[str, Any]:
         "models_present": present,
         "models_missing": missing,
         "max_batch": MAX_BATCH,
-        "auth_required": bool(NIL_API_KEY),
+        "auth_required": bool(NIL_API_KEY) or NIL_REQUIRE_PAYMENT,
+        "require_payment": NIL_REQUIRE_PAYMENT,
     }
 
 
