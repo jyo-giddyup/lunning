@@ -10,27 +10,18 @@ Endpoints:
     GET  /schema              -> required feature columns           (gated if NIL_API_KEY set)
     GET  /explain?top_k=15    -> per-target feature importances     (gated if NIL_API_KEY set)
     POST /predict             -> single athlete or batch            (gated if NIL_API_KEY set)
-    POST /checkout            -> create Stripe Checkout Session     (always public)
-    POST /webhooks/stripe     -> Stripe webhook receiver            (always public; signature-verified)
 
 Authentication:
-    If the NIL_API_KEY env var is set, every endpoint except /health,
-    /checkout, and /webhooks/stripe requires an `X-API-Key: <key>`
-    header that matches it. Comparison is constant-time
-    (secrets.compare_digest) to avoid timing attacks. If NIL_API_KEY
-    is unset or empty, the service is open — useful for local
-    development; set NIL_API_KEY in production. /checkout is the
-    purchase entry point so it stays open (otherwise customers would
-    need an API key to buy the API key); /webhooks/stripe authenticates
-    via Stripe's own signature header.
+    If the NIL_API_KEY env var is set, every endpoint except /health
+    requires an `X-API-Key: <key>` header that matches it. Comparison is
+    constant-time (secrets.compare_digest) to avoid timing attacks. If
+    NIL_API_KEY is unset or empty, the service is open — useful for local
+    development; set NIL_API_KEY in production.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import secrets
-import time
-from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +29,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import audit, payments
+from . import audit
 from .features import FEATURE_COLUMNS
 from .models import TARGETS
 from .predict import predict as _predict
@@ -50,18 +41,8 @@ MAX_BATCH = max(1, int(os.environ.get("NIL_MAX_BATCH", "100")))
 # Optional API key gate. Empty / unset = open. Always set in production.
 NIL_API_KEY = os.environ.get("NIL_API_KEY", "").strip()
 
-# Endpoints that bypass the key gate. /health is for Fly/k8s probes;
-# /webhooks/stripe authenticates via stripe-signature, not X-API-Key;
-# /checkout is the purchase entry point — gating it would require an API
-# key in order to buy the API key.
-PUBLIC_PATHS = frozenset({"/health", "/webhooks/stripe", "/checkout"})
-
-# In-memory sliding-window rate limit on /checkout (M2 from the security
-# review). Per-instance only — if the predictor is ever horizontally
-# scaled, replace with a Redis-backed counter so all instances share state.
-CHECKOUT_RATE_LIMIT = int(os.environ.get("NIL_CHECKOUT_RATE_LIMIT", "10"))
-CHECKOUT_RATE_WINDOW = float(os.environ.get("NIL_CHECKOUT_RATE_WINDOW", "60"))
-_checkout_buckets: dict[str, deque[float]] = defaultdict(deque)
+# Endpoints that bypass the key gate (Fly health checks, k8s probes, etc.).
+PUBLIC_PATHS = frozenset({"/health"})
 
 
 class Athlete(BaseModel):
@@ -85,48 +66,16 @@ def _artifacts_dir() -> Path:
     return Path(raw).resolve()
 
 
-app = FastAPI(title="nil-predictor", version="0.1.3")
-app.include_router(payments.router)
-
-
-def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",", 1)[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-@app.middleware("http")
-async def checkout_rate_limit(request: Request, call_next):
-    if request.url.path == "/checkout" and request.method == "POST":
-        ip = _client_ip(request)
-        now = time.monotonic()
-        bucket = _checkout_buckets[ip]
-        cutoff = now - CHECKOUT_RATE_WINDOW
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        if len(bucket) >= CHECKOUT_RATE_LIMIT:
-            retry_after = max(1, int(CHECKOUT_RATE_WINDOW - (now - bucket[0])) + 1)
-            return JSONResponse(
-                {"detail": "rate_limited"},
-                status_code=429,
-                headers={"Retry-After": str(retry_after)},
-            )
-        bucket.append(now)
-    return await call_next(request)
+app = FastAPI(title="nil-predictor", version="0.1.2")
 
 
 @app.middleware("http")
 async def api_key_gate(request: Request, call_next):
     if NIL_API_KEY and request.url.path not in PUBLIC_PATHS:
         provided = request.headers.get("x-api-key", "")
-        # Hash both sides to fixed length so compare_digest runs in constant
-        # time regardless of whether `provided` is empty or wrong-length.
-        # The earlier `not provided`-short-circuit leaked "header missing"
-        # versus "header wrong" via response timing (L6).
-        provided_hash = hashlib.sha256(provided.encode()).digest()
-        expected_hash = hashlib.sha256(NIL_API_KEY.encode()).digest()
-        if not secrets.compare_digest(provided_hash, expected_hash):
+        # constant-time compare; secrets.compare_digest requires same-length strs
+        # so we hash both sides via fixed-width comparison.
+        if not provided or not secrets.compare_digest(provided, NIL_API_KEY):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
