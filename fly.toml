@@ -1,6 +1,7 @@
 # Fly.io deployment config for nil-predictor.
 # Launch:
 #   flyctl auth login
+#   flyctl volumes create data --region iad --size 1 --app nil-predictor --yes
 #   flyctl launch --image ghcr.io/jyo-giddyup/nil-predictor:latest --copy-config --no-deploy
 #   flyctl deploy
 #
@@ -17,7 +18,16 @@ primary_region = "iad"
 
 [env]
   NIL_ARTIFACTS_DIR = "/app/artifacts"
-  PORT = "8000"
+  NIL_AUDIT_LOG     = "/app/data/audit.log"
+  NIL_CUSTOMER_DB   = "/app/data/customers.db"
+  PORT              = "8000"
+
+# Persistent volume for the audit log + customer store. Create once with
+#   flyctl volumes create data --region iad --size 1 --app nil-predictor --yes
+# Without it the customers DB and audit log are wiped on every deploy.
+[mounts]
+  source      = "data"
+  destination = "/app/data"
 
 [http_service]
   internal_port = 8000

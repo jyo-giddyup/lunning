@@ -53,9 +53,17 @@ def emit(event: str, payload: dict[str, Any] | None = None,
 
 
 # Field whitelist: only non-sensitive metadata is stored verbatim.
-SAFE_FIELDS = {"n_records", "model_version", "n_athletes", "seed",
-               "out_dir", "duration_ms", "exit_code", "error_kind",
-               "artifacts_dir", "model_count", "violation_count"}
+# Stripe fields (event_type, event_id, session_id, price_id, quantity,
+# client_reference_id, amount_total, subscription_id, status) are
+# operational identifiers, not PII.
+SAFE_FIELDS = {
+    "n_records", "model_version", "n_athletes", "seed",
+    "out_dir", "duration_ms", "exit_code", "error_kind",
+    "artifacts_dir", "model_count", "violation_count",
+    "event_type", "event_id", "session_id", "price_id",
+    "quantity", "client_reference_id", "amount_total",
+    "error_detail", "subscription_id", "status",
+}
 
 
 def _strip_payload(payload: dict[str, Any]) -> dict[str, Any]:
