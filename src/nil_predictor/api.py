@@ -44,6 +44,7 @@ import os
 import secrets
 import time
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,10 @@ NIL_API_KEY = os.environ.get("NIL_API_KEY", "").strip()
 # middleware behaves exactly as before, so flipping the new database +
 # webhook handlers into production at merge time is safe.
 NIL_REQUIRE_PAYMENT = os.environ.get("NIL_REQUIRE_PAYMENT", "").lower() in (
+    "1", "true", "yes", "on",
+)
+
+NIL_ENABLE_AGENTS = os.environ.get("NIL_ENABLE_AGENTS", "").lower() in (
     "1", "true", "yes", "on",
 )
 
@@ -111,8 +116,23 @@ def _artifacts_dir() -> Path:
     return Path(raw).resolve()
 
 
-app = FastAPI(title="nil-predictor", version="0.1.4")
+@asynccontextmanager
+async def _lifespan(application: FastAPI):  # noqa: ARG001
+    if NIL_ENABLE_AGENTS:
+        from .agents import scheduler
+        scheduler.start(_artifacts_dir())
+    yield
+    if NIL_ENABLE_AGENTS:
+        from .agents import scheduler
+        scheduler.stop()
+
+
+app = FastAPI(title="nil-predictor", version="0.1.5", lifespan=_lifespan)
 app.include_router(payments.router)
+
+if NIL_ENABLE_AGENTS:
+    from .agents.router import router as _agents_router
+    app.include_router(_agents_router)
 
 
 def _client_ip(request: Request) -> str:
@@ -199,6 +219,7 @@ def health() -> dict[str, Any]:
         "max_batch": MAX_BATCH,
         "auth_required": bool(NIL_API_KEY) or NIL_REQUIRE_PAYMENT,
         "require_payment": NIL_REQUIRE_PAYMENT,
+        "agents_enabled": NIL_ENABLE_AGENTS,
     }
 
 

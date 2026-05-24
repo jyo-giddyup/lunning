@@ -20,6 +20,7 @@ primary_region = "iad"
   NIL_ARTIFACTS_DIR = "/app/artifacts"
   NIL_AUDIT_LOG     = "/app/data/audit.log"
   NIL_CUSTOMER_DB   = "/app/data/customers.db"
+  NIL_AGENT_DB      = "/app/data/agents.db"
   PORT              = "8000"
 
 # Persistent volume for the audit log + customer store. Create once with
