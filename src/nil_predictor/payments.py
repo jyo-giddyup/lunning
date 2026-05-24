@@ -6,6 +6,7 @@ Monetization gate for the predictor:
     POST /webhooks/stripe          -> verify signature, process subscription events
     GET  /customer/bootstrap       -> one-shot API-key retrieval after checkout
     GET  /me                       -> the calling customer's record
+    POST /portal-session           -> create a Billing Portal session URL
     GET  /revenue                  -> succeeded-charge totals per currency
 
 Required env vars (set as Fly secrets in production):
@@ -14,6 +15,7 @@ Required env vars (set as Fly secrets in production):
     STRIPE_PRICE_ID        price_... the customer is purchasing
     STRIPE_SUCCESS_URL     where Stripe redirects on successful payment
     STRIPE_CANCEL_URL      where Stripe redirects on cancel
+    STRIPE_PORTAL_RETURN_URL  where the Billing Portal sends the user on Done
 
 Optional:
     STRIPE_MODE            "subscription" (default) or "payment"
@@ -34,19 +36,11 @@ from . import audit, customers
 
 router = APIRouter()
 
-# Hard cap on webhook body size. Stripe webhooks top out around 256KB; 1 MB
-# is an order of magnitude of headroom while still bounding allocation.
 MAX_WEBHOOK_BYTES = 1_048_576
-
-# How many recent audit entries to scan for duplicate webhook event IDs.
-# Stripe retries failed webhooks for up to 3 days; 200 entries covers the
-# typical replay window for a low-volume service. If volume grows, switch
-# to an indexed dedup store.
 WEBHOOK_DEDUP_WINDOW = 200
 
 
 def _event_already_processed(event_id: str | None) -> bool:
-    """True if a `stripe.webhook` audit record with the same event_id exists."""
     if not event_id:
         return False
     for record in audit.tail(WEBHOOK_DEDUP_WINDOW):
@@ -64,7 +58,6 @@ class CheckoutRequest(BaseModel):
 
 
 def _stripe():
-    """Lazy-load the Stripe SDK + secret key. Raises 503 if either is missing."""
     try:
         import stripe
     except ImportError as e:
@@ -143,8 +136,6 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
     if not sig:
         raise HTTPException(status_code=400, detail="missing stripe-signature header")
 
-    # Bound body size before allocation. Trust Content-Length when given
-    # but also stop reading mid-stream if a client lies about it.
     content_length = request.headers.get("content-length")
     if content_length:
         try:
@@ -166,8 +157,6 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
     except stripe.error.SignatureVerificationError as e:
         raise HTTPException(status_code=400, detail="invalid signature") from e
 
-    # Idempotency: Stripe retries on 5xx/timeouts for up to 3 days. If we've
-    # already audited this event_id, return success without re-processing.
     event_id = event.get("id")
     if _event_already_processed(event_id):
         return {"received": True, "duplicate": True}
@@ -202,10 +191,6 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
                 request_id=request_id,
             )
         except Exception as e:
-            # Customer creation failing is bad but we still want to ACK
-            # the webhook so Stripe doesn't retry forever. The audit
-            # entry plus the alert from missing stripe.customer_created
-            # is enough signal for an operator to investigate.
             audit.emit(
                 "stripe.customer_create_error",
                 payload={
@@ -251,17 +236,6 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
 
 @router.get("/customer/bootstrap")
 def customer_bootstrap(session_id: str) -> dict[str, Any]:
-    """One-shot API-key retrieval right after Stripe redirects.
-
-    The consumer's /billing/success page calls this with the
-    `session_id` Stripe substitutes into the redirect URL. Returns
-    the API key once; subsequent calls with the same session_id
-    return 404 — the customer must save the value (or, once we
-    ship welcome-email delivery, recover it from email).
-
-    Authentication is by knowledge of the one-time Stripe session id;
-    the path is in PUBLIC_PATHS so the middleware doesn't gate it.
-    """
     rec = customers.claim_bootstrap(session_id)
     if not rec:
         raise HTTPException(
@@ -277,13 +251,6 @@ def customer_bootstrap(session_id: str) -> dict[str, Any]:
 
 @router.get("/me")
 def me(request: Request) -> dict[str, Any]:
-    """Return the calling customer's record.
-
-    Gated by the regular X-API-Key middleware (this is why /me is
-    NOT in PUBLIC_PATHS — we *need* the gate to identify the caller).
-    Useful for the consumer to render "Signed in as ..." or to check
-    that a saved API key is still active.
-    """
     rec = customers.find_by_api_key(request.headers.get("x-api-key", ""))
     if not rec:
         raise HTTPException(status_code=404, detail="no customer for this key")
@@ -291,6 +258,62 @@ def me(request: Request) -> dict[str, Any]:
         "email": rec["email"],
         "status": rec["status"],
         "created_at": rec["created_at"],
+    }
+
+
+@router.post("/portal-session")
+def portal_session(request: Request) -> dict[str, Any]:
+    """Create a Stripe Billing Portal session for the authenticated customer.
+
+    The customer is identified by their X-API-Key. They can then visit
+    the returned URL to cancel, update payment method, or download
+    invoices — all hosted by Stripe.
+
+    Requires: NIL_REQUIRE_PAYMENT=true (in legacy mode, customer keys
+    don't pass the middleware gate so only the admin key reaches here,
+    which has no customer row — returns 404).
+    """
+    rec = customers.find_by_api_key(request.headers.get("x-api-key", ""))
+    if not rec:
+        raise HTTPException(status_code=404, detail="no customer for this key")
+
+    stripe_customer_id = rec.get("stripe_customer_id")
+    if not stripe_customer_id:
+        raise HTTPException(
+            status_code=409,
+            detail="customer has no stripe_customer_id",
+        )
+
+    return_url = _required_env("STRIPE_PORTAL_RETURN_URL")
+    stripe = _stripe()
+
+    request_id = audit.emit("portal.request", payload={})["request_id"]
+
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=stripe_customer_id,
+            return_url=return_url,
+        )
+    except Exception as e:
+        audit.emit(
+            "portal.error",
+            payload={"error_kind": type(e).__name__, "error_detail": str(e)},
+            request_id=request_id,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "portal_create_failed", "request_id": request_id},
+        ) from e
+
+    audit.emit(
+        "portal.created",
+        payload={"session_id": session.get("id")},
+        request_id=request_id,
+    )
+    return {
+        "url": session.get("url"),
+        "session_id": session.get("id"),
+        "request_id": request_id,
     }
 
 
@@ -308,7 +331,6 @@ def _parse_date(s: str, label: str) -> datetime:
 
 
 def _parse_window(since: str | None, until: str | None) -> tuple[int, int]:
-    """Parse YYYY-MM-DD into UTC unix timestamps; defaults to last 30 days."""
     today = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -321,14 +343,6 @@ def _parse_window(since: str | None, until: str | None) -> tuple[int, int]:
 
 @router.get("/revenue")
 def revenue(since: str | None = None, until: str | None = None) -> dict[str, Any]:
-    """Succeeded-charge totals per currency in a date window.
-
-    Defaults to the last 30 days (UTC). Amounts are returned in
-    Stripe's smallest unit per currency (cents for USD, yen for JPY,
-    etc.) so callers format correctly without a zero-decimal-currency
-    table. Net = gross - refunds; processing fees are not subtracted
-    (those live on BalanceTransaction, not Charge).
-    """
     stripe = _stripe()
     since_ts, until_ts = _parse_window(since, until)
 
