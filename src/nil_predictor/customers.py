@@ -54,6 +54,15 @@ def db_path() -> Path:
     return Path(os.environ.get("NIL_CUSTOMER_DB", "/app/data/customers.db"))
 
 
+def _migrate(c: sqlite3.Connection) -> None:
+    """Idempotent column additions for post-v1 schema changes."""
+    cols = {row[1] for row in c.execute("PRAGMA table_info(customers)").fetchall()}
+    if "tier" not in cols:
+        c.execute(
+            "ALTER TABLE customers ADD COLUMN tier TEXT NOT NULL DEFAULT 'pro'"
+        )
+
+
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
     path = db_path()
@@ -65,6 +74,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
     c.row_factory = sqlite3.Row
     try:
         c.executescript(SCHEMA)
+        _migrate(c)
         yield c
     finally:
         c.close()
@@ -78,7 +88,8 @@ def _row_to_dict(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
-def create_from_session(session: dict[str, Any]) -> dict[str, Any]:
+def create_from_session(session: dict[str, Any],
+                        tier: str = "pro") -> dict[str, Any]:
     """Insert a customer record from a Stripe checkout.session.completed.
 
     Idempotent on `stripe_session_id` — replaying the same webhook
@@ -102,8 +113,8 @@ def create_from_session(session: dict[str, Any]) -> dict[str, Any]:
             """
             INSERT INTO customers
               (api_key, stripe_customer_id, stripe_subscription_id,
-               stripe_session_id, email, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+               stripe_session_id, email, status, tier, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
             """,
             (
                 _new_api_key(),
@@ -111,6 +122,7 @@ def create_from_session(session: dict[str, Any]) -> dict[str, Any]:
                 session.get("subscription"),
                 session_id,
                 session.get("customer_email"),
+                tier,
                 now,
                 now,
             ),

@@ -23,6 +23,11 @@ primary_region = "iad"
   NIL_AGENT_DB      = "/app/data/agents.db"
   PORT              = "8000"
 
+# Tier price mapping (set as Fly secrets with real values in production).
+# STRIPE_PRICE_ID_FREE       = "price_..."
+# STRIPE_PRICE_ID_PRO        = "price_..."
+# STRIPE_PRICE_ID_ENTERPRISE = "price_..."
+
 # Persistent volume for the audit log + customer store. Create once with
 #   flyctl volumes create data --region iad --size 1 --app nil-predictor --yes
 # Without it the customers DB and audit log are wiped on every deploy.

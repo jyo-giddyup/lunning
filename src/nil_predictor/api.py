@@ -52,7 +52,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import audit, customers, payments
+from . import audit, customers, payments, tiers
 from .features import FEATURE_COLUMNS
 from .models import TARGETS
 from .predict import predict as _predict
@@ -184,22 +184,46 @@ async def api_key_gate(request: Request, call_next):
         return await call_next(request)
 
     if NIL_REQUIRE_PAYMENT:
-        # Per-customer mode: accept the admin key OR a known customer key
-        # whose subscription is active.
         provided = request.headers.get("x-api-key", "")
         if not provided:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         if _matches_admin_key(provided):
+            request.state.customer = None
+            request.state.tier = "enterprise"
             return await call_next(request)
         rec = customers.find_by_api_key(provided)
         if rec is None or not customers.is_active(rec):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+        tier_name = tiers.TierName(rec.get("tier", "pro"))
+        request.state.customer = rec
+        request.state.tier = tier_name.value
+
+        tier_spec = tiers.TIERS[tier_name]
+        if tier_spec.daily_limit is not None:
+            count = tiers.increment_usage(rec["api_key"], customers._conn)
+            if count > tier_spec.daily_limit:
+                return JSONResponse(
+                    {"detail": "daily_rate_limit_exceeded",
+                     "limit": tier_spec.daily_limit, "used": count},
+                    status_code=429,
+                )
+        else:
+            tiers.increment_usage(rec["api_key"], customers._conn)
+
+        if not tiers.path_allowed(path, tier_name):
+            return JSONResponse(
+                {"detail": f"tier '{tier_name.value}' cannot access {path}"},
+                status_code=403,
+            )
         return await call_next(request)
 
     # Legacy single-shared-key mode.
     if NIL_API_KEY:
         if not _matches_admin_key(request.headers.get("x-api-key", "")):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    request.state.customer = None
+    request.state.tier = "enterprise"
     return await call_next(request)
 
 
@@ -242,7 +266,7 @@ def explain(top_k: int = 15) -> dict[str, Any]:
 
 
 @app.post("/predict")
-def predict_one(payload: Athlete | list[Athlete] | PredictRequest) -> dict[str, Any]:
+def predict_one(request: Request, payload: Athlete | list[Athlete] | PredictRequest) -> dict[str, Any]:
     if isinstance(payload, Athlete):
         records = [payload.model_dump()]
     elif isinstance(payload, list):
@@ -252,10 +276,14 @@ def predict_one(payload: Athlete | list[Athlete] | PredictRequest) -> dict[str, 
             raise HTTPException(status_code=400, detail="athletes array is empty")
         records = [a.model_dump() for a in payload.athletes]
 
-    if len(records) > MAX_BATCH:
+    tier_name = getattr(request.state, "tier", "enterprise")
+    tier_spec = tiers.TIERS.get(tiers.TierName(tier_name))
+    effective_max = min(MAX_BATCH, tier_spec.max_batch) if tier_spec else MAX_BATCH
+
+    if len(records) > effective_max:
         raise HTTPException(
             status_code=413,
-            detail=f"batch size {len(records)} exceeds limit {MAX_BATCH}",
+            detail=f"batch size {len(records)} exceeds limit {effective_max}",
         )
 
     art = _artifacts_dir()

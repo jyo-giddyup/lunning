@@ -30,7 +30,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import audit, customers
+from . import audit, customers, tiers
 
 router = APIRouter()
 
@@ -61,6 +61,7 @@ class CheckoutRequest(BaseModel):
     customer_email: str | None = None
     quantity: int = Field(default=1, ge=1, le=1000)
     client_reference_id: str | None = None
+    tier: str | None = None
 
 
 def _stripe():
@@ -89,7 +90,19 @@ def _required_env(name: str) -> str:
 @router.post("/checkout")
 def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
     stripe = _stripe()
-    price_id = _required_env("STRIPE_PRICE_ID")
+
+    requested_tier = req.tier or "pro"
+    valid_tiers = {t.value for t in tiers.TierName}
+    if requested_tier not in valid_tiers:
+        raise HTTPException(status_code=400, detail=f"unknown tier: {requested_tier}")
+
+    tier_env_key = f"STRIPE_PRICE_ID_{requested_tier.upper()}"
+    price_id = os.environ.get(tier_env_key, "").strip()
+    if not price_id and requested_tier == "pro":
+        price_id = os.environ.get("STRIPE_PRICE_ID", "").strip()
+    if not price_id:
+        raise HTTPException(status_code=503, detail=f"{tier_env_key} not set")
+
     success_url = _required_env("STRIPE_SUCCESS_URL")
     cancel_url = _required_env("STRIPE_CANCEL_URL")
     mode = os.environ.get("STRIPE_MODE", "subscription")
@@ -107,7 +120,7 @@ def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
             cancel_url=cancel_url,
             customer_email=req.customer_email,
             client_reference_id=req.client_reference_id,
-            metadata={"request_id": request_id},
+            metadata={"request_id": request_id, "tier": requested_tier},
         )
     except Exception as e:
         audit.emit(
@@ -180,6 +193,7 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
 
     if event_type == "checkout.session.completed":
         session = event["data"]["object"]
+        tier = (session.get("metadata") or {}).get("tier", "pro")
         audit.emit(
             "stripe.checkout_completed",
             payload={
@@ -191,7 +205,7 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
             request_id=request_id,
         )
         try:
-            rec = customers.create_from_session(session)
+            rec = customers.create_from_session(session, tier=tier)
             audit.emit(
                 "stripe.customer_created",
                 payload={
@@ -284,13 +298,28 @@ def me(request: Request) -> dict[str, Any]:
     Useful for the consumer to render "Signed in as ..." or to check
     that a saved API key is still active.
     """
-    rec = customers.find_by_api_key(request.headers.get("x-api-key", ""))
+    rec = getattr(request.state, "customer", None)
+    if not rec:
+        rec = customers.find_by_api_key(request.headers.get("x-api-key", ""))
     if not rec:
         raise HTTPException(status_code=404, detail="no customer for this key")
+
+    tier_name = tiers.TierName(rec.get("tier", "pro"))
+    tier_spec = tiers.TIERS[tier_name]
+    usage = tiers.get_usage(rec["api_key"], customers._conn)
+
     return {
         "email": rec["email"],
         "status": rec["status"],
         "created_at": rec["created_at"],
+        "tier": tier_name.value,
+        "usage": {
+            "date": usage["date"],
+            "requests_today": usage["request_count"],
+            "daily_limit": tier_spec.daily_limit,
+        },
+        "features": sorted(tier_spec.features),
+        "max_batch": tier_spec.max_batch,
     }
 
 
