@@ -74,5 +74,16 @@ def tail(n: int = 10) -> list[dict[str, Any]]:
     path = audit_path()
     if not path.exists():
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()[-n:]
-    return [json.loads(line) for line in lines if line.strip()]
+    # Read from end of file to avoid loading the entire log into memory.
+    try:
+        size = path.stat().st_size
+        if size == 0:
+            return []
+        chunk = min(size, n * 2048)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - chunk))
+            data = f.read().decode("utf-8", errors="replace")
+        lines = [l for l in data.splitlines() if l.strip()][-n:]
+        return [json.loads(line) for line in lines]
+    except (OSError, ValueError):
+        return []

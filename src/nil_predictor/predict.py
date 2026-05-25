@@ -20,13 +20,20 @@ from .features import FEATURE_COLUMNS
 from .models import TARGETS
 
 
+_model_cache: dict[str, dict[str, Any]] = {}
+
+
 def _load(artifacts: Path) -> dict[str, Any]:
+    cache_key = str(artifacts.resolve())
+    if cache_key in _model_cache:
+        return _model_cache[cache_key]
     bundles = {}
     for spec in TARGETS:
         path = artifacts / f"{spec.name}.joblib"
         if not path.exists():
             raise FileNotFoundError(f"missing artifact: {path}")
         bundles[spec.name] = joblib.load(path)
+    _model_cache[cache_key] = bundles
     return bundles
 
 

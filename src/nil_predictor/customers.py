@@ -54,17 +54,20 @@ def db_path() -> Path:
     return Path(os.environ.get("NIL_CUSTOMER_DB", "/app/data/customers.db"))
 
 
+_schema_initialized: set[str] = set()
+
+
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # isolation_level=None puts us in autocommit; each statement is its own
-    # transaction. Fine for our single-statement operations and avoids the
-    # implicit-BEGIN behaviour of the default mode.
     c = sqlite3.connect(path, isolation_level=None)
     c.row_factory = sqlite3.Row
     try:
-        c.executescript(SCHEMA)
+        key = str(path)
+        if key not in _schema_initialized:
+            c.executescript(SCHEMA)
+            _schema_initialized.add(key)
         yield c
     finally:
         c.close()
