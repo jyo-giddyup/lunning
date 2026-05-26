@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import audit, customers
+from .packages import package_for_checkout, resolve_package, contract_fields_for_package, list_self_serve_packages
 
 router = APIRouter()
 
@@ -61,6 +62,8 @@ class CheckoutRequest(BaseModel):
     customer_email: str | None = None
     quantity: int = Field(default=1, ge=1, le=1000)
     client_reference_id: str | None = None
+    package_slug: str | None = None
+    price_id: str | None = None
 
 
 def _stripe():
@@ -89,15 +92,42 @@ def _required_env(name: str) -> str:
 @router.post("/checkout")
 def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
     stripe = _stripe()
-    price_id = _required_env("STRIPE_PRICE_ID")
     success_url = _required_env("STRIPE_SUCCESS_URL")
     cancel_url = _required_env("STRIPE_CANCEL_URL")
+
+    pkg = None
+    price_id = req.price_id
     mode = os.environ.get("STRIPE_MODE", "subscription")
+
+    if req.package_slug:
+        pkg = package_for_checkout(req.package_slug)
+        if pkg:
+            price_id = price_id or pkg.get("price_id")
+            mode = pkg.get("mode", mode)
+            if mode in ("contract", "free"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"package '{req.package_slug}' does not support self-serve checkout",
+                )
+
+    if not price_id:
+        price_id = os.environ.get("STRIPE_PRICE_ID", "")
+    if not price_id:
+        raise HTTPException(status_code=503, detail="no price_id resolved")
 
     request_id = audit.emit(
         "checkout.request",
-        payload={"price_id": price_id, "quantity": req.quantity},
+        payload={
+            "price_id": price_id,
+            "quantity": req.quantity,
+            "package_slug": req.package_slug or "",
+        },
     )["request_id"]
+
+    metadata: dict[str, str] = {"request_id": request_id}
+    if pkg:
+        metadata["package_slug"] = pkg["slug"]
+        metadata["package_name"] = pkg["name"]
 
     try:
         session = stripe.checkout.Session.create(
@@ -107,7 +137,7 @@ def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
             cancel_url=cancel_url,
             customer_email=req.customer_email,
             client_reference_id=req.client_reference_id,
-            metadata={"request_id": request_id},
+            metadata=metadata,
         )
     except Exception as e:
         audit.emit(
@@ -125,14 +155,106 @@ def create_checkout(req: CheckoutRequest) -> dict[str, Any]:
 
     audit.emit(
         "checkout.created",
-        payload={"session_id": session.get("id"), "price_id": price_id},
+        payload={
+            "session_id": session.get("id"),
+            "price_id": price_id,
+            "package_slug": req.package_slug or "",
+        },
         request_id=request_id,
     )
-    return {
+
+    result: dict[str, Any] = {
         "url": session.get("url"),
         "session_id": session.get("id"),
         "request_id": request_id,
     }
+    if pkg:
+        result["package"] = {
+            "slug": pkg["slug"],
+            "name": pkg["name"],
+            "display_price": pkg["display_price"],
+            "cadence": pkg["cadence"],
+        }
+    return result
+
+
+@router.get("/packages")
+def list_packages() -> dict[str, Any]:
+    packages = list_self_serve_packages()
+    safe = [
+        {k: v for k, v in p.items() if k != "stripe_price_env"}
+        for p in packages
+    ]
+    return {"packages": safe, "count": len(safe)}
+
+
+class ContractRequest(BaseModel):
+    email: str
+    name: str | None = None
+    company: str | None = None
+    package_slug: str
+    institution: str | None = None
+    sponsor: str | None = None
+    therapeutic_area: str | None = None
+    npi: str | None = None
+
+
+@router.post("/contract")
+def create_contract(req: ContractRequest) -> dict[str, Any]:
+    import uuid
+
+    pkg = resolve_package(req.package_slug)
+    if not pkg:
+        raise HTTPException(status_code=400, detail=f"unknown package: {req.package_slug}")
+
+    overrides: dict[str, str] = {}
+    if req.institution:
+        overrides["institution"] = req.institution
+    if req.sponsor:
+        overrides["sponsor"] = req.sponsor
+    if req.therapeutic_area:
+        overrides["therapeutic_area"] = req.therapeutic_area
+    if req.npi:
+        overrides["physician_npi"] = req.npi
+
+    fields = contract_fields_for_package(req.package_slug, overrides)
+
+    request_id = audit.emit(
+        "contract.created",
+        payload={"package_slug": req.package_slug, "email": req.email},
+    )["request_id"]
+
+    contract = {
+        "contract_id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "draft",
+        "client": {
+            "email": req.email.lower().strip(),
+            "name": req.name,
+            "company": req.company,
+        },
+        "package": {
+            "slug": pkg["slug"],
+            "name": pkg["name"],
+            "display_price": pkg["display_price"],
+            "cadence": pkg["cadence"],
+            "mode": pkg["mode"],
+        },
+        "fields": fields,
+        "terms": {
+            "payment_terms": "Charged monthly via Stripe"
+            if pkg["mode"] == "subscription"
+            else "Due upon execution",
+            "cancellation": "Cancel anytime via Stripe portal"
+            if pkg["mode"] == "subscription"
+            else "Non-refundable after work begins",
+            "data_sources": "Public data — CMS Open Payments, NIH RePORTER, ClinicalTrials.gov, PubMed, NPPES",
+            "confidentiality": "All deliverables are confidential. Client may share internally.",
+        },
+        "request_id": request_id,
+    }
+
+    return {"contract": contract}
 
 
 @router.post("/webhooks/stripe")
