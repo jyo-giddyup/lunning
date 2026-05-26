@@ -80,6 +80,7 @@ NIL_REQUIRE_PAYMENT = os.environ.get("NIL_REQUIRE_PAYMENT", "").lower() in (
 # customer back — they don't have the key yet.
 PUBLIC_PATHS = frozenset({
     "/health", "/webhooks/stripe", "/checkout", "/customer/bootstrap",
+    "/packages", "/contract",
 })
 
 # In-memory sliding-window rate limit on /checkout (M2 from the security
