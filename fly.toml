@@ -25,7 +25,7 @@ primary_region = "iad"
 # Persistent volume for the audit log + customer store. Create once with
 #   flyctl volumes create data --region iad --size 1 --app nil-predictor --yes
 # Without it the customers DB and audit log are wiped on every deploy.
-[mounts]
+[[mounts]]
   source      = "data"
   destination = "/app/data"
 
