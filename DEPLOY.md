@@ -131,3 +131,30 @@ In Vercel, set env vars then redeploy:
 - **how-to-do-this** project: `PREDICT_API_URL=https://kolx.vercel.app`
 
 Live consumer URL: `https://how-to-do-this.vercel.app/predict`
+
+## Custom domain path: yonehiro.com/NIL
+
+`yonehiro.com` root is a separate Next.js/Vercel site. To expose the
+predictor API at `yonehiro.com/NIL` without touching that site, a
+Cloudflare Worker in `cloudflare-worker/` reverse-proxies `/NIL*` to
+`https://nil-predictor.fly.dev`, stripping the `/NIL` prefix.
+
+Prerequisite: `yonehiro.com` needs at least one proxied (orange-cloud)
+DNS record in Cloudflare — the Worker route only intercepts traffic
+that already passes through Cloudflare's edge for that zone.
+
+Deploy from a terminal with the Cloudflare account for yonehiro.com:
+
+```bash
+cd cloudflare-worker
+npm install
+npx wrangler login      # one-time, opens a browser to authorize
+npx wrangler deploy     # publishes the worker and attaches the route
+```
+
+Verify:
+
+```bash
+curl https://yonehiro.com/NIL/health
+# {"ok": true, "models_present": [...], "models_missing": []}
+```

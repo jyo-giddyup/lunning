@@ -1,0 +1,10 @@
+name = "nil-predictor-proxy"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# yonehiro.com must have at least one proxied (orange-cloud) DNS record
+# in Cloudflare for this route to intercept traffic before it reaches
+# the Vercel origin.
+[[routes]]
+pattern = "yonehiro.com/NIL*"
+zone_name = "yonehiro.com"
