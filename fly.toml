@@ -1,51 +1,42 @@
-# Fly.io deployment config for nil-predictor.
-# Launch:
-#   flyctl auth login
-#   flyctl volumes create data --region iad --size 1 --app nil-predictor --yes
-#   flyctl launch --image ghcr.io/jyo-giddyup/nil-predictor:latest --copy-config --no-deploy
-#   flyctl deploy
+# fly.toml app configuration file generated for nil-predictor on 2026-07-20T18:30:52Z
 #
-# Once deployed, the service is at https://nil-predictor.fly.dev
-# Set kolx env: NIL_PREDICTOR_URL=https://nil-predictor.fly.dev
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "nil-predictor"
-primary_region = "iad"
+app = 'nil-predictor'
+primary_region = 'iad'
 
-# Image is published by .github/workflows/publish-image.yml on push to main.
-# Override per-deploy with: flyctl deploy --image ghcr.io/jyo-giddyup/nil-predictor:<sha>
 [build]
-  image = "ghcr.io/jyo-giddyup/nil-predictor:latest"
+  image = 'ghcr.io/jyo-giddyup/nil-predictor:latest'
 
 [env]
-  NIL_ARTIFACTS_DIR = "/app/artifacts"
-  NIL_AUDIT_LOG     = "/app/data/audit.log"
-  NIL_CUSTOMER_DB   = "/app/data/customers.db"
-  PORT              = "8000"
+  NIL_ARTIFACTS_DIR = '/app/artifacts'
+  NIL_AUDIT_LOG = '/app/data/audit.log'
+  NIL_CUSTOMER_DB = '/app/data/customers.db'
+  PORT = '8000'
 
-# Persistent volume for the audit log + customer store. Create once with
-#   flyctl volumes create data --region iad --size 1 --app nil-predictor --yes
-# Without it the customers DB and audit log are wiped on every deploy.
-[mounts]
-  source      = "data"
-  destination = "/app/data"
+[[mounts]]
+  source = 'data'
+  destination = '/app/data'
 
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
   [[http_service.checks]]
-    grace_period = "30s"
-    interval = "30s"
-    method = "GET"
-    path = "/health"
-    protocol = "http"
-    timeout = "5s"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '30s'
+    method = 'GET'
+    path = '/health'
+    protocol = 'http'
 
 [[vm]]
-  cpu_kind = "shared"
+  memory = '1gb'
+  cpu_kind = 'shared'
   cpus = 1
-  memory = "1gb"
+  memory_mb = 1024
