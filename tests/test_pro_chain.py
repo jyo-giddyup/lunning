@@ -36,7 +36,12 @@ def test_chain_runs_pro_only_for_draft_likely(tmp_path: Path):
         records,
         amateur_artifacts=amateur_dir,
         pro_artifacts=pro_dir,
-        pro_threshold=0.4,
+        # Threshold sits comfortably below what a top SEC QB draws with
+        # small-n calibration (~0.35–0.45) and comfortably above what a
+        # walk-on distance runner draws (~0.00–0.05). Bumping this above
+        # ~0.35 makes the QB assertion flaky under new threshold-tuning
+        # code paths — see f2a6075.
+        pro_threshold=0.25,
     )
     assert len(out) == 2
     # Every record gets an amateur block.
