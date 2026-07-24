@@ -20,14 +20,19 @@ def client(tmp_path_factory):
     return TestClient(app)
 
 
-def test_health_reports_present_models(client):
+def test_health_reports_ready_count_without_leaking_paths(client):
+    # /health is public; the response shape is minimal on purpose.
+    # Anything richer (model names, feature schema) lives behind /schema,
+    # which is gated. This test is paired with the invariant in
+    # tests/test_ml_gate_invariant.py::test_health_response_does_not_leak_config.
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert set(body["models_present"]) == {
-        "valuation", "deal_count", "tier", "portal", "drafted",
-    }
+    assert body["models_ready"] == 5
+    assert body["models_total"] == 5
+    assert "artifacts_dir" not in body
+    assert "models_present" not in body
 
 
 def test_schema_lists_required_fields(client):

@@ -33,6 +33,31 @@ should be codified into CI on the next iteration (path filters or
 a check that no PR diffs touch more than one `nil_predictor/<stage>/`
 subtree).
 
+## ML endpoints are gated by default (mandatory)
+
+The service is designed to enhance internal / Syncofy consumers, not
+to be a public ML endpoint. Any new endpoint whose path reads like an
+ML operation — anything matching
+`/(predict|explain|schema|train|score|forecast|classify|model|models|infer|inference|evaluate|embed|embeddings|features?|targets?)`
+— **defaults to gated** (i.e. requires `X-API-Key` and, when
+`NIL_REQUIRE_PAYMENT=1`, an active customer record).
+
+Never add a new ML route to `PUBLIC_PATHS`. If you genuinely need one
+publicly reachable (e.g. a public demo playground with per-IP rate
+limiting), add its path to
+`tests/test_ml_gate_invariant.py::EXPECTED_PUBLIC_ML_PATHS` with a
+review comment explaining why. That edit **is** the review gate.
+
+`/health` is intentionally minimal — no filesystem paths, no model
+names, no secrets. Everything is on `HEALTH_ALLOWED_FIELDS` in the
+same test file. New probe-safe fields go there; anything richer moves
+behind `/schema`, which is gated.
+
+The same ideology applies across stages (amateur, pro, and any future
+sibling submodule): a new stage's endpoints default gated, its
+artifacts default private, and its `/health` contributions stay
+minimal.
+
 ## Companion docs
 
 - `README.md` — install / train / serve / predict
