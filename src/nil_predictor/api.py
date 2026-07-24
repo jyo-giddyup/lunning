@@ -186,17 +186,25 @@ async def api_key_gate(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    """Liveness endpoint — must not leak filesystem paths or config.
+
+    Kept minimal so a public probe (Fly/k8s/uptime monitor) can tell if
+    the service is up without also learning where its model artifacts
+    live on disk. Model-name detail moves behind /schema, which is
+    gated.
+    """
     art = _artifacts_dir()
-    present = []
-    missing = []
+    present = 0
+    missing = 0
     for spec in TARGETS:
-        path = art / f"{spec.name}.joblib"
-        (present if path.exists() else missing).append(spec.name)
+        if (art / f"{spec.name}.joblib").exists():
+            present += 1
+        else:
+            missing += 1
     return {
-        "ok": not missing,
-        "artifacts_dir": str(art),
-        "models_present": present,
-        "models_missing": missing,
+        "ok": missing == 0,
+        "models_ready": present,
+        "models_total": present + missing,
         "max_batch": MAX_BATCH,
         "auth_required": bool(NIL_API_KEY) or NIL_REQUIRE_PAYMENT,
         "require_payment": NIL_REQUIRE_PAYMENT,
