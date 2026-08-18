@@ -98,6 +98,15 @@ echo '{
 pytest -q
 ```
 
+## Claude Code plugins
+
+Contributors opening this repo in Claude Code get the `engineering` and
+`data` plugins enabled automatically via
+[`.claude/settings.json`](./.claude/settings.json) (code review,
+architecture/incident workflows, and SQL/dataset/dashboard tooling for
+the model training + fairness-audit pipeline). Add plugins there rather
+than enabling them per-session so the whole team gets the same toolset.
+
 ## Pro stage (sibling submodule)
 
 A separate package `nil_predictor.pro` predicts post-college outcomes
